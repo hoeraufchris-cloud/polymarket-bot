@@ -1,0 +1,1 @@
+worker: python3 analyze_activity.py
