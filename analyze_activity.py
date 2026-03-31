@@ -16,7 +16,7 @@ PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
 HOURS_LOOKBACK = 12
-POLL_SECONDS = 30   
+POLL_SECONDS = 60   
 
 LEADERBOARD_WALLET_LIMIT = 50
 LEADERBOARD_WALLET_OFFSETS = [0 , 50 , 100]
@@ -35,7 +35,16 @@ BET_ALERT_COOLDOWN_SECONDS = 15 * 60
 BET_ALERT_MIN_PRICE_IMPROVEMENT = 0.01
 BET_ALERT_MAX_ADVERSE_PRICE_MOVE = 0.04
 BET_ALERT_MIN_STAKE_PCT_INCREASE = 10
-DATA_DIR = "/data"
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+if os.path.isdir("/data"):
+    DATA_DIR = "/data"
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+
+os.makedirs(DATA_DIR, exist_ok=True)
 
 CLV_TRACKER_PATH = f"{DATA_DIR}/clv_tracker.json"
 TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
@@ -1004,8 +1013,12 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
 
         size_ratio = min(size_ratio, 10)
 
-        if size_ratio >= 3:
-            size_points = 20
+        if size_ratio >= 10:
+            size_points = 30
+        elif size_ratio >= 5:
+            size_points = 22
+        elif size_ratio >= 3:
+            size_points = 16
         elif size_ratio >= 2:
             size_points = 10
         elif size_ratio >= 1:
@@ -1015,9 +1028,29 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
         else:
             size_points = 0
 
+        total_notional = float(g.get("total_size", 0) or 0) * avg_trade_price
+
+        if total_notional >= 100000:
+            absolute_size_points = 20
+        elif total_notional >= 50000:
+            absolute_size_points = 14
+        elif total_notional >= 25000:
+            absolute_size_points = 10
+        elif total_notional >= 10000:
+            absolute_size_points = 6
+        elif total_notional >= 5000:
+            absolute_size_points = 3
+        else:
+            absolute_size_points = 0
+
+        conviction_points = min(size_points + absolute_size_points, 40)
+
         g = dict(g)
         g["size_ratio"] = round(size_ratio, 2)
         g["size_points"] = size_points
+        g["absolute_size_points"] = absolute_size_points
+        g["conviction_points"] = conviction_points
+        g["total_notional"] = round(total_notional, 2)
         g["avg_trade_size"] = round(avg_trade_size, 6)
         g["avg_trade_notional"] = round(avg_trade_notional, 2)
 
@@ -1250,26 +1283,32 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
                 continue
 
         if time_since_last_buy <= 120:
-            age_penalty = 0
+            live_age_penalty = 0
+            pregame_age_penalty = 0
             age_bucket = "fresh"
         elif time_since_last_buy <= 300:
-            age_penalty = 5
+            live_age_penalty = 5
+            pregame_age_penalty = 2
             age_bucket = "slightly stale"
         elif time_since_last_buy <= 600:
-            age_penalty = 10
+            live_age_penalty = 10
+            pregame_age_penalty = 4
             age_bucket = "stale"
         elif time_since_last_buy <= 1200:
-            age_penalty = 16
+            live_age_penalty = 16
+            pregame_age_penalty = 7
             age_bucket = "old"
         elif time_since_last_buy <= 1800:
-            age_penalty = 22
+            live_age_penalty = 22
+            pregame_age_penalty = 10
             age_bucket = "very old"
         else:
-            age_penalty = 35
+            live_age_penalty = 35
+            pregame_age_penalty = 14
             age_bucket = "dead"
 
         if is_live:
-            age_penalty += 5
+            age_penalty = live_age_penalty + 5
             if age_bucket == "fresh":
                 age_bucket = "live-fresh"
             elif age_bucket == "slightly stale":
@@ -1282,8 +1321,17 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
                 age_bucket = "live-very-old"
             g["age_adjustment"] = "live_full_penalty"
         else:
-            age_penalty = 0
-            g["age_adjustment"] = "pregame_no_time_decay"
+            conviction_points_for_decay = int(g.get("conviction_points", 0) or 0)
+
+            if conviction_points_for_decay >= 30:
+                age_penalty = max(pregame_age_penalty - 4, 0)
+                g["age_adjustment"] = "pregame_light_penalty_elite_conviction"
+            elif conviction_points_for_decay >= 20:
+                age_penalty = max(pregame_age_penalty - 2, 0)
+                g["age_adjustment"] = "pregame_light_penalty_strong_conviction"
+            else:
+                age_penalty = pregame_age_penalty
+                g["age_adjustment"] = "pregame_light_penalty_standard"
 
         g["age_penalty"] = age_penalty
         g["age_bucket"] = age_bucket
@@ -1307,6 +1355,9 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
         consensus_weighted = float(g.get("consensus_weighted", 0) or 0)
         has_structure = (consensus_weighted >= 1.5 or accumulation_points >= 20)
 
+        conviction_points = int(g.get("conviction_points", 0) or 0)
+        absolute_size_points = int(g.get("absolute_size_points", 0) or 0)
+
         if (
             is_leader_or_early
             and has_structure
@@ -1320,28 +1371,38 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
             )
         ):
             base_label = "BET"
-            base_score = 75 + size_points
+            base_score = 75 + conviction_points
             base_stake_pct = 50
-            base_reason = f"Strong signal ({sequence_role}) | Confirmations: {confirmation_count}"
+            base_reason = (
+                f"Strong signal ({sequence_role}) | Confirmations: {confirmation_count}"
+                f" | Conviction={conviction_points}"
+            )
         elif is_leader_or_early:
             buy_count_for_override = int(g.get("buy_count", 0) or 0)
             size_ratio_for_override = float(g.get("size_ratio", 0) or 0)
-
             if buy_count_for_override >= 50 and size_ratio_for_override >= 0.7:
                 base_label = "BET"
-                base_score = 78 + size_points
+                base_score = 78 + conviction_points
                 base_stake_pct = 60
-                base_reason = f"Extreme accumulation ({sequence_role}) | Buys: {buy_count_for_override}"
+                base_reason = (
+                    f"Extreme accumulation ({sequence_role}) | Buys: {buy_count_for_override}"
+                    f" | Conviction={conviction_points}"
+                )
             else:
                 base_label = "LEAN"
-                base_score = 60 + size_points
+                base_score = 60 + conviction_points
                 base_stake_pct = 30
-                base_reason = f"Leader/early but no structure ({sequence_role}) | Confirmations: {confirmation_count}"
+                base_reason = (
+                    f"Leader/early but no structure ({sequence_role}) | Confirmations: {confirmation_count}"
+                    f" | Conviction={conviction_points}"
+                )
         else:
             base_label = "LEAN"
-            base_score = 60 + size_points
+            base_score = 60 + conviction_points
             base_stake_pct = 30
-            base_reason = "Follower signal capped at LEAN"
+            base_reason = (
+                f"Follower signal capped at LEAN | Conviction={conviction_points}"
+            )
 
         edge_pct_for_decay = float(g.get("edge_pct", 0) or 0)
         size_ratio_for_decay = float(g.get("size_ratio", 0) or 0)
@@ -1396,54 +1457,99 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
         g["label"] = base_label
         g["score"] = decayed_score
 
-        # --- tighter bell-curve stake sizing centered around 100% ---
-        if decayed_score >= 75:
-            strength = max(0.0, min((decayed_score - 75) / 20.0, 1.0))
-            raw_stake_pct = 100 + (strength ** 2) * 50
-        else:
-            weakness = max(0.0, min((75 - decayed_score) / 15.0, 1.0))
-            raw_stake_pct = 100 - (weakness ** 1.5) * 20
-
+        conviction_points_for_stake = int(g.get("conviction_points", 0) or 0)
+        size_ratio_for_stake = float(g.get("size_ratio", 0) or 0)
+        total_notional_for_stake = float(g.get("total_notional", 0) or 0)
         edge_pct_for_stake = float(g.get("edge_pct", 0) or 0)
         current_price_for_stake = float(g.get("current_price", 0) or 0)
 
-        # Cap weak/no-edge signals so they cannot get oversized just from score/structure
-        if edge_pct_for_stake <= 0:
+        # --- base stake from score ---
+        if decayed_score >= 95:
+            base_stake_pct = 125
+        elif decayed_score >= 88:
+            base_stake_pct = 110
+        elif decayed_score >= 80:
+            base_stake_pct = 100
+        elif decayed_score >= 72:
+            base_stake_pct = 90
+        else:
+            base_stake_pct = 80
+
+        # --- conviction bump from size ratio ---
+        ratio_bump_pct = 0
+        if size_ratio_for_stake >= 10:
+            ratio_bump_pct = 20
+        elif size_ratio_for_stake >= 5:
+            ratio_bump_pct = 15
+        elif size_ratio_for_stake >= 3:
+            ratio_bump_pct = 10
+        elif size_ratio_for_stake >= 2:
+            ratio_bump_pct = 5
+
+        # --- conviction bump from absolute notional ---
+        total_notional_bump_pct = 0
+        if total_notional_for_stake >= 100000:
+            total_notional_bump_pct = 15
+        elif total_notional_for_stake >= 50000:
+            total_notional_bump_pct = 10
+        elif total_notional_for_stake >= 25000:
+            total_notional_bump_pct = 5
+
+        conviction_bump_pct = min(ratio_bump_pct + total_notional_bump_pct, 25)
+        raw_stake_pct = base_stake_pct + conviction_bump_pct
+
+        # --- price cap ---
+        # User preference: allow up to 100% through +150 (price 0.40)
+        if current_price_for_stake < 0.19:
+            price_cap_pct = 50
+        elif current_price_for_stake < 0.24:
+            price_cap_pct = 60
+        elif current_price_for_stake < 0.29:
+            price_cap_pct = 70
+        elif current_price_for_stake < 0.34:
+            price_cap_pct = 80
+        elif current_price_for_stake < 0.40:
+            price_cap_pct = 90
+        elif current_price_for_stake < 0.50:
+            price_cap_pct = 100
+        elif current_price_for_stake < 0.65:
+            price_cap_pct = 110
+        elif current_price_for_stake < 0.80:
+            price_cap_pct = 125
+        else:
+            price_cap_pct = 110
+
+        # --- softer edge cap ---
+        if edge_pct_for_stake <= -2.0:
+            edge_cap_pct = 80
+        elif edge_pct_for_stake < 0:
             edge_cap_pct = 90
         elif edge_pct_for_stake < 1.0:
             edge_cap_pct = 100
-        elif edge_pct_for_stake < 2.0:
-            edge_cap_pct = 100
-        elif edge_pct_for_stake < 3.0:
+        elif edge_pct_for_stake < 2.5:
             edge_cap_pct = 110
-        elif edge_pct_for_stake < 4.0:
-            edge_cap_pct = 125
-        elif edge_pct_for_stake < 6.0:
-            edge_cap_pct = 125
         else:
             edge_cap_pct = 150
 
-        # Slight extra caution for expensive favorites
-        if current_price_for_stake >= 0.75:
-            edge_cap_pct = min(edge_cap_pct, 125)
-        elif current_price_for_stake >= 0.65:
-            edge_cap_pct = min(edge_cap_pct, 140)
+        final_cap_pct = min(price_cap_pct, edge_cap_pct)
+        unclipped_stake_pct = max(50, min(raw_stake_pct, final_cap_pct))
 
-        unclipped_stake_pct = max(70, min(raw_stake_pct, edge_cap_pct))
-
-        # --- snap stake to tighter production buckets ---
-        allowed_buckets = [80, 90, 100, 110, 125, 150]
+        # --- snap stake to production buckets ---
+        allowed_buckets = [50, 60, 70, 80, 90, 100, 110, 125, 150]
 
         def snap_to_bucket(x):
             return min(allowed_buckets, key=lambda b: abs(b - x))
 
         g["stake_pct"] = snap_to_bucket(unclipped_stake_pct)
-
         g["reason"] = (
             f"{base_reason} | Age: {age_bucket}"
-            f" | Stake raw={raw_stake_pct}%"
+            f" | Stake base={base_stake_pct}%"
+            f", ratio bump={ratio_bump_pct}%"
+            f", notional bump={total_notional_bump_pct}%"
+            f", raw={raw_stake_pct}%"
+            f", price cap={price_cap_pct}%"
             f", edge cap={edge_cap_pct}%"
-            f", final stake={g['stake_pct']}%"
+            f", final={g['stake_pct']}%"
         )
 
         # --- FINAL BET STRUCTURE ENFORCEMENT (GLOBAL) ---
@@ -2216,10 +2322,16 @@ def build_consensus_diagnostics(accumulation_groups, scored_candidates):
 
 
 def get_bet_alert_key(g):
-    return (
-        g.get("slug", ""),
-        g.get("outcome", ""),
-    )
+    if not isinstance(g, dict):
+        return ""
+
+    slug = str(g.get("slug", "") or "").strip()
+    outcome = str(g.get("outcome", "") or "").strip()
+
+    if not slug or not outcome:
+        return ""
+
+    return f"{slug}||{outcome}"
 
 def make_clv_key(slug, outcome, wallet):
     return f"{slug}||{outcome}||{wallet}"
@@ -2236,11 +2348,11 @@ def load_clv_tracker():
 
 def save_clv_tracker(clv_tracker):
     try:
+        os.makedirs(os.path.dirname(CLV_TRACKER_PATH), exist_ok=True)
         with open(CLV_TRACKER_PATH, "w", encoding="utf-8") as f:
             json.dump(clv_tracker, f, indent=2, sort_keys=True)
     except Exception as e:
         print(f"[CLV tracker save error] {repr(e)}")
-
 
 def make_tracked_bet_key(g, now_ts):
     if not isinstance(g, dict):
@@ -2281,27 +2393,24 @@ def save_alerted_bets(alerted_bets):
     try:
         now_ts = int(time.time())
         ttl_seconds = 12 * 60 * 60  # 12 hours
-
         cleaned = {}
-
         for key, row in alerted_bets.items():
             if not isinstance(row, dict):
                 continue
-
             last_ts = int(row.get("last_alert_ts", 0) or 0)
-
             if last_ts and (now_ts - last_ts) <= ttl_seconds:
                 cleaned[key] = row
 
+        os.makedirs(os.path.dirname(ALERTED_BETS_PATH), exist_ok=True)
         with open(ALERTED_BETS_PATH, "w", encoding="utf-8") as f:
             json.dump(cleaned, f, indent=2, sort_keys=True)
-
     except Exception as e:
         print(f"[Alerted bets save error] {repr(e)}")
 
 
 def save_tracked_bets(tracked_bets):
     try:
+        os.makedirs(os.path.dirname(TRACKED_BETS_PATH), exist_ok=True)
         with open(TRACKED_BETS_PATH, "w", encoding="utf-8") as f:
             json.dump(tracked_bets, f, indent=2, sort_keys=True)
     except Exception as e:
@@ -2766,6 +2875,24 @@ def get_game_conflict_key(g):
     return normalized
 
 
+def get_same_side_prior_alert(g, alerted_bets):
+    if not isinstance(g, dict):
+        return None
+
+    alert_key = get_bet_alert_key(g)
+    if not alert_key:
+        return None
+
+    prior = alerted_bets.get(alert_key)
+    if not isinstance(prior, dict):
+        return None
+
+    if str(prior.get("label", "") or "").upper() != "BET":
+        return None
+
+    return prior
+
+
 def get_opposite_bet_alert(g, alerted_bets):
     if not isinstance(g, dict):
         return None
@@ -2777,10 +2904,29 @@ def get_opposite_bet_alert(g, alerted_bets):
 
     current_game_conflict_key = get_game_conflict_key(g)
     current_outcome_key = get_normalized_outcome_key(g)
-
     opposite_priors = []
-    for (prior_slug, prior_outcome), prior in alerted_bets.items():
+
+    for prior_key, prior in alerted_bets.items():
+        if not isinstance(prior, dict):
+            continue
+
         if str(prior.get("label", "") or "").upper() != "BET":
+            continue
+
+        prior_slug = str(prior.get("slug", "") or "").strip()
+        prior_outcome = str(prior.get("outcome", "") or "").strip()
+
+        if not prior_slug or not prior_outcome:
+            prior_key_str = str(prior_key or "").strip()
+            if "||" in prior_key_str:
+                parts = prior_key_str.split("||", 1)
+                prior_slug = str(parts[0] or "").strip()
+                prior_outcome = str(parts[1] or "").strip()
+
+        if not prior_slug or not prior_outcome:
+            continue
+
+        if prior_slug == slug and prior_outcome == outcome:
             continue
 
         prior_game_conflict_key = str(prior.get("game_conflict_key", "") or "").strip().lower()
@@ -2792,7 +2938,6 @@ def get_opposite_bet_alert(g, alerted_bets):
             and prior_game_conflict_key
             and prior_game_conflict_key == current_game_conflict_key
         )
-
         opposite_outcome = (
             current_outcome_key
             and prior_outcome_key
@@ -2812,6 +2957,74 @@ def get_opposite_bet_alert(g, alerted_bets):
         reverse=True,
     )
     return opposite_priors[0]
+
+def get_prior_duplicate_bet_alert(g, alerted_bets):
+    if not isinstance(g, dict):
+        return None
+
+    current_exact_key = get_bet_alert_key(g)
+    current_totals_family_key = get_totals_family_key(g)
+    current_side_family_key = get_side_family_key(g)
+
+    prior_matches = []
+
+    for prior_key, prior in alerted_bets.items():
+        if not isinstance(prior, dict):
+            continue
+
+        if str(prior.get("label", "") or "").upper() != "BET":
+            continue
+
+        prior_exact_key = str(prior_key or "").strip()
+
+        prior_slug = str(prior.get("slug", "") or "").strip()
+        prior_outcome = str(prior.get("outcome", "") or "").strip()
+
+        if not prior_slug or not prior_outcome:
+            continue
+
+        prior_g = {
+            "slug": prior_slug,
+            "outcome": prior_outcome,
+            "market": prior.get("market", ""),
+            "title": prior.get("title", ""),
+            "question": prior.get("market", ""),
+        }
+
+        prior_totals_family_key = get_totals_family_key(prior_g)
+        prior_side_family_key = get_side_family_key(prior_g)
+
+        same_exact_key = (
+            current_exact_key
+            and prior_exact_key
+            and current_exact_key == prior_exact_key
+        )
+
+        same_totals_family = (
+            current_totals_family_key is not None
+            and prior_totals_family_key is not None
+            and current_totals_family_key == prior_totals_family_key
+        )
+
+        same_side_family = (
+            current_side_family_key is not None
+            and prior_side_family_key is not None
+            and current_side_family_key == prior_side_family_key
+        )
+
+        if not (same_exact_key or same_totals_family or same_side_family):
+            continue
+
+        prior_matches.append(prior)
+
+    if not prior_matches:
+        return None
+
+    prior_matches.sort(
+        key=lambda x: int(x.get("last_alert_ts", 0) or 0),
+        reverse=True,
+    )
+    return prior_matches[0]
 
 def get_possible_flip_reason(g, opposite_prior):
     if not isinstance(g, dict) or not isinstance(opposite_prior, dict):
@@ -2894,8 +3107,12 @@ def is_possible_flip(g, opposite_prior):
 def annotate_opposite_side_conflict(g, alerted_bets):
     if not isinstance(g, dict):
         return g
+
     annotated = dict(g)
+    same_side_prior = get_same_side_prior_alert(annotated, alerted_bets)
     opposite_prior = get_opposite_bet_alert(annotated, alerted_bets)
+
+    annotated["same_side_prior_exists"] = same_side_prior is not None
     annotated["opposite_conflict"] = False
     annotated["possible_flip"] = False
     annotated["possible_flip_reason"] = None
@@ -2904,8 +3121,13 @@ def annotate_opposite_side_conflict(g, alerted_bets):
     annotated["opposite_score"] = None
     annotated["opposite_edge_pct"] = None
     annotated["opposite_followers"] = 0
+
+    if same_side_prior is not None:
+        return annotated
+
     if not opposite_prior:
         return annotated
+
     annotated["opposite_conflict"] = True
     annotated["opposite_outcome"] = opposite_prior.get("outcome")
     annotated["opposite_wallet"] = opposite_prior.get("wallet")
@@ -2923,11 +3145,21 @@ def should_send_bet_alert(g, alerted_bets, now_ts):
     if str(g.get("label", "") or "").upper() != "BET":
         return False
 
-    alert_key = get_bet_alert_key(g)
-    prior = alerted_bets.get(alert_key)
+    g["duplicate_reason"] = None
+
+    if g.get("opposite_conflict") and not g.get("possible_flip"):
+        return False
+
+    if g.get("possible_flip"):
+        return True
+
+    prior = get_prior_duplicate_bet_alert(g, alerted_bets)
 
     if prior is None:
         return True
+
+    last_alert_ts = int(prior.get("last_alert_ts", 0) or 0)
+    seconds_since_last_alert = max(0, int(now_ts) - last_alert_ts)
 
     old_price = prior.get("current_price")
     new_price = g.get("current_price")
@@ -2935,33 +3167,67 @@ def should_send_bet_alert(g, alerted_bets, now_ts):
     old_stake_pct = int(prior.get("stake_pct", 0) or 0)
     new_stake_pct = int(g.get("stake_pct", 0) or 0)
 
+    old_score = int(prior.get("score", 0) or 0)
+    new_score = int(g.get("score", 0) or 0)
+
+    old_edge_pct = float(prior.get("edge_pct", 0) or 0)
+    new_edge_pct = float(g.get("edge_pct", 0) or 0)
+
+    old_followers = int(prior.get("followers", 0) or 0)
+    new_followers = int(get_follower_count(g) or 0)
+
+    old_total_size = float(prior.get("total_size", 0) or 0)
+    new_total_size = float(g.get("total_size", 0) or 0)
+
     old_consensus = str(prior.get("consensus_type", "") or "").lower()
     new_consensus = str(g.get("consensus_type", "") or "").lower()
 
     old_consensus_score = int(prior.get("consensus_score", 0) or 0)
     new_consensus_score = int(g.get("consensus_score", 0) or 0)
 
-    stake_improved = (
-        new_stake_pct >= (old_stake_pct + BET_ALERT_MIN_STAKE_PCT_INCREASE)
-    )
-
     price_improved = False
     price_not_much_worse = True
+    price_diff_cents = None
 
     if old_price is not None and new_price is not None:
         try:
+            price_diff_cents = round((float(old_price) - float(new_price)) * 100, 2)
             price_improved = float(new_price) <= (
                 float(old_price) - BET_ALERT_MIN_PRICE_IMPROVEMENT
             )
-            price_not_much_worse = float(new_price) < (
+            price_not_much_worse = float(new_price) <= (
                 float(old_price) + BET_ALERT_MAX_ADVERSE_PRICE_MOVE
             )
         except Exception:
             price_improved = False
             price_not_much_worse = True
+            price_diff_cents = None
 
     if not price_not_much_worse:
         return False
+
+    stake_improved = (
+        new_stake_pct >= (old_stake_pct + BET_ALERT_MIN_STAKE_PCT_INCREASE)
+    )
+
+    edge_improved = new_edge_pct >= (old_edge_pct + 1.0)
+
+    score_improved = new_score >= (old_score + BET_ALERT_MIN_SCORE_IMPROVEMENT)
+
+    followers_improved = (
+        new_followers >= (old_followers + BET_ALERT_MIN_FOLLOWER_INCREASE)
+    )
+
+    size_improved = False
+    if old_total_size > 0:
+        size_improved = (
+            new_total_size >= max(
+                old_total_size + BET_ALERT_MIN_NEW_SHARP_STAKE,
+                old_total_size * 1.25,
+            )
+        )
+    else:
+        size_improved = new_total_size >= BET_ALERT_MIN_NEW_SHARP_STAKE
 
     consensus_improved = (
         (old_consensus != "full" and new_consensus == "full")
@@ -2973,33 +3239,57 @@ def should_send_bet_alert(g, alerted_bets, now_ts):
         )
     )
 
-    duplicate_reason = None
+    actionable_reasons = []
 
     if stake_improved:
-        duplicate_reason = f"higher stake ({old_stake_pct}% -> {new_stake_pct}%)"
+        actionable_reasons.append(
+            f"higher stake ({old_stake_pct}% -> {new_stake_pct}%)"
+        )
 
-        if price_improved:
-            try:
-                price_diff_cents = round((float(old_price) - float(new_price)) * 100, 2)
-                duplicate_reason = (
-                    f"{duplicate_reason} | better price ({price_diff_cents:+.2f}c)"
-                )
-            except Exception:
-                pass
+    if price_improved and price_diff_cents is not None:
+        actionable_reasons.append(
+            f"better price ({price_diff_cents:+.2f}c)"
+        )
 
-        elif consensus_improved:
-            if old_consensus != "full" and new_consensus == "full":
-                duplicate_reason = f"{duplicate_reason} | upgraded to full consensus"
-            else:
-                duplicate_reason = (
-                    f"{duplicate_reason} | stronger consensus score "
-                    f"({new_consensus_score} vs {old_consensus_score})"
-                )
+    if consensus_improved:
+        if old_consensus != "full" and new_consensus == "full":
+            actionable_reasons.append("upgraded to full consensus")
+        else:
+            actionable_reasons.append(
+                f"stronger consensus score ({new_consensus_score} vs {old_consensus_score})"
+            )
 
-    if duplicate_reason:
-        g["duplicate_reason"] = duplicate_reason
+    if size_improved:
+        actionable_reasons.append(
+            f"larger sharp size (${new_total_size:,.0f} vs ${old_total_size:,.0f})"
+        )
 
-    return duplicate_reason is not None
+    if followers_improved:
+        actionable_reasons.append(
+            f"more followers ({new_followers} vs {old_followers})"
+        )
+
+    if score_improved and edge_improved:
+        actionable_reasons.append(
+            f"stronger score/edge ({old_score}/{old_edge_pct:.2f}% -> {new_score}/{new_edge_pct:.2f}%)"
+        )
+
+    if not actionable_reasons:
+        return False
+
+    if seconds_since_last_alert < BET_ALERT_COOLDOWN_SECONDS:
+        high_conviction_update = (
+            stake_improved
+            or price_improved
+            or consensus_improved
+            or (size_improved and followers_improved)
+            or (score_improved and edge_improved)
+        )
+        if not high_conviction_update:
+            return False
+
+    g["duplicate_reason"] = " | ".join(actionable_reasons)
+    return True
 
 def store_bet_alert(g, alerted_bets, now_ts):
     alert_key = get_bet_alert_key(g)
@@ -3382,11 +3672,9 @@ def resolve_side_family_bet_conflicts(scored_candidates):
     for g in scored_candidates:
         if not isinstance(g, dict):
             continue
-
         family_key = get_side_family_key(g)
         if family_key is None:
             continue
-
         grouped[family_key].append(g)
 
     if not grouped:
@@ -3399,22 +3687,18 @@ def resolve_side_family_bet_conflicts(scored_candidates):
             stake_pct = float(g.get("stake_pct", 0) or 0)
         except Exception:
             stake_pct = 0.0
-
         try:
             score = float(g.get("score", 0) or 0)
         except Exception:
             score = 0.0
-
         try:
             edge_pct = float(g.get("edge_pct", 0) or 0)
         except Exception:
             edge_pct = 0.0
-
         try:
             market_movement_abs = abs(float(g.get("market_movement_cents", 999) or 999))
         except Exception:
             market_movement_abs = 999.0
-
         try:
             total_size = float(g.get("total_size", 0) or 0)
         except Exception:
@@ -3433,7 +3717,6 @@ def resolve_side_family_bet_conflicts(scored_candidates):
             g for g in candidates
             if str(g.get("label", "") or "").upper() == "BET"
         ]
-
         if len(bet_candidates) <= 1:
             continue
 
@@ -3462,10 +3745,8 @@ def resolve_side_family_bet_conflicts(scored_candidates):
                 candidate for candidate in family_candidates
                 if str(candidate.get("label", "") or "").upper() == "BET"
             ]
-
             if len(family_bets) > 1:
                 winning_bet = max(family_bets, key=bet_rank)
-
                 g = dict(g)
                 old_reason = str(g.get("reason", "") or "")
                 g["label"] = "PASS"
@@ -3480,6 +3761,313 @@ def resolve_side_family_bet_conflicts(scored_candidates):
         resolved.append(g)
 
     return resolved
+
+def dedupe_bet_candidates_for_cycle(bet_candidates):
+    grouped = defaultdict(list)
+
+    for g in bet_candidates:
+        if not isinstance(g, dict):
+            continue
+
+        alert_key = get_bet_alert_key(g)
+        if not alert_key:
+            continue
+
+        grouped[alert_key].append(g)
+
+    if not grouped:
+        return []
+
+    def cycle_bet_rank(g):
+        try:
+            stake_pct = float(g.get("stake_pct", 0) or 0)
+        except Exception:
+            stake_pct = 0.0
+        try:
+            score = float(g.get("score", 0) or 0)
+        except Exception:
+            score = 0.0
+        try:
+            edge_pct = float(g.get("edge_pct", 0) or 0)
+        except Exception:
+            edge_pct = 0.0
+        try:
+            followers = float(get_follower_count(g) or 0)
+        except Exception:
+            followers = 0.0
+        try:
+            consensus_score = float(g.get("consensus_score", 0) or 0)
+        except Exception:
+            consensus_score = 0.0
+        try:
+            total_size = float(g.get("total_size", 0) or 0)
+        except Exception:
+            total_size = 0.0
+        try:
+            market_movement_abs = abs(float(g.get("market_movement_cents", 999) or 999))
+        except Exception:
+            market_movement_abs = 999.0
+        try:
+            seconds_since_last_buy = int(g.get("seconds_since_last_buy", 999999) or 999999)
+        except Exception:
+            seconds_since_last_buy = 999999
+
+        return (
+            stake_pct,
+            score,
+            edge_pct,
+            followers,
+            consensus_score,
+            total_size,
+            -market_movement_abs,
+            -seconds_since_last_buy,
+        )
+
+    deduped = []
+
+    for _, candidates in grouped.items():
+        winning_bet = max(candidates, key=cycle_bet_rank)
+        deduped.append(winning_bet)
+
+    deduped.sort(key=cycle_bet_rank, reverse=True)
+    return deduped
+
+def classify_bet_alert_decision(g, alerted_bets, now_ts):
+    if not isinstance(g, dict):
+        return "skip_not_dict"
+
+    if str(g.get("label", "") or "").upper() != "BET":
+        return "skip_not_bet"
+
+    if g.get("opposite_conflict") and not g.get("possible_flip"):
+        return "skip_opposite_conflict"
+
+    if g.get("possible_flip"):
+        return "send_possible_flip"
+
+    alert_key = get_bet_alert_key(g)
+    prior = alerted_bets.get(alert_key)
+
+    if prior is None:
+        return "send_new_bet"
+
+    old_price = prior.get("current_price")
+    new_price = g.get("current_price")
+
+    old_stake_pct = int(prior.get("stake_pct", 0) or 0)
+    new_stake_pct = int(g.get("stake_pct", 0) or 0)
+
+    old_score = int(prior.get("score", 0) or 0)
+    new_score = int(g.get("score", 0) or 0)
+
+    old_edge_pct = float(prior.get("edge_pct", 0) or 0)
+    new_edge_pct = float(g.get("edge_pct", 0) or 0)
+
+    old_followers = int(prior.get("followers", 0) or 0)
+    new_followers = int(get_follower_count(g) or 0)
+
+    old_total_size = float(prior.get("total_size", 0) or 0)
+    new_total_size = float(g.get("total_size", 0) or 0)
+
+    old_consensus = str(prior.get("consensus_type", "") or "").lower()
+    new_consensus = str(g.get("consensus_type", "") or "").lower()
+
+    old_consensus_score = int(prior.get("consensus_score", 0) or 0)
+    new_consensus_score = int(g.get("consensus_score", 0) or 0)
+
+    price_improved = False
+    price_not_much_worse = True
+
+    if old_price is not None and new_price is not None:
+        try:
+            price_improved = float(new_price) <= (
+                float(old_price) - BET_ALERT_MIN_PRICE_IMPROVEMENT
+            )
+            price_not_much_worse = float(new_price) <= (
+                float(old_price) + BET_ALERT_MAX_ADVERSE_PRICE_MOVE
+            )
+        except Exception:
+            price_improved = False
+            price_not_much_worse = True
+
+    if not price_not_much_worse:
+        return "skip_duplicate_price_worse"
+
+    stake_improved = (
+        new_stake_pct >= (old_stake_pct + BET_ALERT_MIN_STAKE_PCT_INCREASE)
+    )
+
+    edge_improved = new_edge_pct >= (old_edge_pct + 1.0)
+
+    score_improved = new_score >= (old_score + BET_ALERT_MIN_SCORE_IMPROVEMENT)
+
+    followers_improved = (
+        new_followers >= (old_followers + BET_ALERT_MIN_FOLLOWER_INCREASE)
+    )
+
+    size_improved = False
+    if old_total_size > 0:
+        size_improved = (
+            new_total_size >= max(
+                old_total_size + BET_ALERT_MIN_NEW_SHARP_STAKE,
+                old_total_size * 1.25,
+            )
+        )
+    else:
+        size_improved = new_total_size >= BET_ALERT_MIN_NEW_SHARP_STAKE
+
+    consensus_improved = (
+        (old_consensus != "full" and new_consensus == "full")
+        or (
+            new_consensus_score >= (
+                old_consensus_score + BET_ALERT_MIN_CONSENSUS_SCORE_IMPROVEMENT
+            )
+            and new_consensus_score >= 60
+        )
+    )
+
+    actionable_duplicate = (
+        stake_improved
+        or price_improved
+        or consensus_improved
+        or size_improved
+        or followers_improved
+        or (score_improved and edge_improved)
+    )
+
+    if not actionable_duplicate:
+        return "skip_duplicate_not_actionable"
+
+    last_alert_ts = int(prior.get("last_alert_ts", 0) or 0)
+    seconds_since_last_alert = max(0, int(now_ts) - last_alert_ts)
+
+    if seconds_since_last_alert < BET_ALERT_COOLDOWN_SECONDS:
+        high_conviction_update = (
+            stake_improved
+            or price_improved
+            or consensus_improved
+            or (size_improved and followers_improved)
+            or (score_improved and edge_improved)
+        )
+        if not high_conviction_update:
+            return "skip_duplicate_cooldown"
+
+    return "send_actionable_duplicate"
+
+def get_bet_age_bucket(seconds_since_last_buy):
+    try:
+        age_seconds = int(seconds_since_last_buy)
+    except Exception:
+        return "unknown"
+
+    if age_seconds <= 60:
+        return "00-60s"
+    if age_seconds <= 180:
+        return "01-03m"
+    if age_seconds <= 300:
+        return "03-05m"
+    if age_seconds <= 600:
+        return "05-10m"
+    if age_seconds <= 1200:
+        return "10-20m"
+    return "20m+"
+
+
+def summarize_bet_age_buckets(bets):
+    summary = {
+        "count": 0,
+        "avg_age_seconds": None,
+        "median_age_seconds": None,
+        "bucket_counts": {
+            "00-60s": 0,
+            "01-03m": 0,
+            "03-05m": 0,
+            "05-10m": 0,
+            "10-20m": 0,
+            "20m+": 0,
+            "unknown": 0,
+        },
+    }
+
+    if not isinstance(bets, list):
+        return summary
+
+    age_values = []
+
+    for g in bets:
+        if not isinstance(g, dict):
+            continue
+
+        raw_age = g.get("seconds_since_last_buy")
+        bucket = get_bet_age_bucket(raw_age)
+        summary["bucket_counts"][bucket] = summary["bucket_counts"].get(bucket, 0) + 1
+
+        try:
+            age_seconds = int(raw_age)
+            if age_seconds >= 0:
+                age_values.append(age_seconds)
+        except Exception:
+            pass
+
+    summary["count"] = len(age_values)
+
+    if age_values:
+        age_values = sorted(age_values)
+        summary["avg_age_seconds"] = round(sum(age_values) / len(age_values), 1)
+
+        n = len(age_values)
+        if n % 2 == 1:
+            summary["median_age_seconds"] = age_values[n // 2]
+        else:
+            summary["median_age_seconds"] = round(
+                (age_values[n // 2 - 1] + age_values[n // 2]) / 2,
+                1,
+            )
+
+    return summary
+
+def summarize_numeric_distribution(values, buckets):
+    summary = {
+        "count": 0,
+        "avg": None,
+        "median": None,
+        "bucket_counts": {label: 0 for label in buckets},
+    }
+
+    clean_values = []
+
+    for v in values:
+        try:
+            val = float(v)
+            clean_values.append(val)
+        except Exception:
+            continue
+
+    summary["count"] = len(clean_values)
+
+    if not clean_values:
+        return summary
+
+    clean_values.sort()
+
+    summary["avg"] = round(sum(clean_values) / len(clean_values), 2)
+
+    n = len(clean_values)
+    if n % 2 == 1:
+        summary["median"] = clean_values[n // 2]
+    else:
+        summary["median"] = round(
+            (clean_values[n // 2 - 1] + clean_values[n // 2]) / 2,
+            2
+        )
+
+    for val in clean_values:
+        for label, condition in buckets.items():
+            if condition(val):
+                summary["bucket_counts"][label] += 1
+                break
+
+    return summary
 
 def run_pipeline(wallet_profiles):
     global TRACKED_WALLETS
@@ -3706,9 +4294,10 @@ def send_pushover_bet_alert(g):
             entry_price_str = f"+{entry_odds}" if entry_odds > 0 else f"{entry_odds}"
     except Exception:
         pass
-
     title = "BET ALERT"
-    if g.get("possible_flip"):
+    if g.get("duplicate_reason"):
+        title = f"DUPLICATE BET – {g['duplicate_reason']}"
+    elif g.get("possible_flip"):
         flip_reason = str(g.get("possible_flip_reason") or "").strip()
         if flip_reason:
             title = f"POSSIBLE FLIP – {flip_reason}"
@@ -3716,9 +4305,6 @@ def send_pushover_bet_alert(g):
             title = "POSSIBLE FLIP"
     elif g.get("opposite_conflict"):
         title = "OPPOSITE-SIDE CONFLICT"
-
-    elif g.get("duplicate_reason"):
-        title = f"DUPLICATE BET – {g['duplicate_reason']}"
 
     event_start = g.get("event_start_time")
     formatted_start, minutes_to_start = format_event_start(event_start)
@@ -3943,12 +4529,18 @@ def send_pushover_bet_alert(g):
             f"{conflict_status}: already alerted on {g.get('opposite_outcome', 'N/A')}\n"
         )
 
+    score_display = "N/A"
+    try:
+        score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
+    except Exception:
+        score_display = "N/A"
+
     message = (
         f"{phase_label} | {market_text}\n"
         f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
+        f"Score: {score_display} | Edge: {edge_pct_display}%\n"
         f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
         f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
-        f"Edge: {edge_pct_display}%\n"
         f"Followers: {followers_display}\n"
         f"Start: {start_str}\n"
         f"Last Bet Placed: {last_bet_str}\n"
@@ -4182,6 +4774,16 @@ if __name__ == "__main__":
     alerted_bets = load_alerted_bets()
     clv_tracker = load_clv_tracker()
     tracked_bets = load_tracked_bets()
+
+    print(f"BASE_DIR: {BASE_DIR}")
+    print(f"DATA_DIR in use: {DATA_DIR}")
+    print(f"ALERTED_BETS_PATH: {ALERTED_BETS_PATH}")
+    print(f"CLV_TRACKER_PATH: {CLV_TRACKER_PATH}")
+    print(f"TRACKED_BETS_PATH: {TRACKED_BETS_PATH}")
+    print(f"Loaded alerted bets: {len(alerted_bets)}")
+    print(f"Loaded CLV tracker rows: {len(clv_tracker)}")
+    print(f"Loaded tracked bets: {len(tracked_bets)}")
+
     wallet_profiles = init_wallet_profiles(TRACKED_WALLETS)
     enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows)
 
@@ -4256,26 +4858,194 @@ if __name__ == "__main__":
                 print(f"Dynamic weight:      {profile['dynamic_weight']}")
             print("=" * 80)
 
-            bet_candidates = [
+            raw_bet_candidates = [
                 g for g in result["scored_candidates"]
                 if isinstance(g, dict) and str(g.get("label", "") or "").upper() == "BET"
             ]
+
+            bet_candidates = dedupe_bet_candidates_for_cycle(raw_bet_candidates)
 
             rejected_candidates = [
                 g for g in result["scored_candidates"]
                 if isinstance(g, dict) and g["label"] == "PASS"
             ]
 
+            alert_decision_counts = defaultdict(int)
+            alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
+            alert_decision_counts["cycle_deduped_away"] = (
+                len(raw_bet_candidates) - len(bet_candidates)
+            )
+
             new_bet_alerts = []
+
             for g in bet_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
+
+                decision = classify_bet_alert_decision(
+                    alert_g,
+                    alerted_bets,
+                    result["now_ts"],
+                )
+                alert_decision_counts[decision] += 1
+
+            raw_bet_candidates = [
+                g for g in result["scored_candidates"]
+                if isinstance(g, dict) and str(g.get("label", "") or "").upper() == "BET"
+            ]
+
+            bet_candidates = dedupe_bet_candidates_for_cycle(raw_bet_candidates)
+
+            rejected_candidates = [
+                g for g in result["scored_candidates"]
+                if isinstance(g, dict) and g["label"] == "PASS"
+            ]
+
+            alert_decision_counts = defaultdict(int)
+            alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
+            alert_decision_counts["cycle_deduped_away"] = (
+                len(raw_bet_candidates) - len(bet_candidates)
+            )
+
+            new_bet_alerts = []
+
+            for g in bet_candidates:
+                alert_g = annotate_opposite_side_conflict(g, alerted_bets)
+                record_clv_bet(alert_g, clv_tracker, result["now_ts"])
+
+                decision = classify_bet_alert_decision(
+                    alert_g,
+                    alerted_bets,
+                    result["now_ts"],
+                )
+                alert_decision_counts[decision] += 1
+
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"]):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
+
             cycle_bet_alerts = new_bet_alerts
+
+            raw_bet_age_summary = summarize_bet_age_buckets(bet_candidates)
+            sent_bet_age_summary = summarize_bet_age_buckets(new_bet_alerts)
+
+            # --- extract metrics for distribution analysis ---
+            notional_values = []
+            ratio_values = []
+            roi_values = []
+
+            for g in bet_candidates:
+                if not isinstance(g, dict):
+                    continue
+
+                notional_values.append(g.get("total_notional", 0))
+                ratio_values.append(g.get("size_ratio", 0))
+                roi_values.append(g.get("leaderboard_roi", 0))
+
+            notional_summary = summarize_numeric_distribution(
+                notional_values,
+                {
+                    "<500": lambda x: x < 500,
+                    "500-1k": lambda x: x < 1000,
+                    "1k-5k": lambda x: x < 5000,
+                    "5k-25k": lambda x: x < 25000,
+                    "25k-100k": lambda x: x < 100000,
+                    "100k+": lambda x: True,
+                }
+            )
+
+            ratio_summary = summarize_numeric_distribution(
+                ratio_values,
+                {
+                    "<1": lambda x: x < 1,
+                    "1-1.5": lambda x: x < 1.5,
+                    "1.5-2": lambda x: x < 2,
+                    "2-3": lambda x: x < 3,
+                    "3-5": lambda x: x < 5,
+                    "5+": lambda x: True,
+                }
+            )
+
+            roi_summary = summarize_numeric_distribution(
+                roi_values,
+                {
+                    "<0": lambda x: x < 0,
+                    "0-1%": lambda x: x < 0.01,
+                    "1-3%": lambda x: x < 0.03,
+                    "3-5%": lambda x: x < 0.05,
+                    "5-8%": lambda x: x < 0.08,
+                    "8%+": lambda x: True,
+                }
+            )
+
+            print("-" * 80)
+            print("BET ALERT DECISION SUMMARY")
+            print("=" * 80)
+            print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
+            print(f"Cycle deduped away: {alert_decision_counts['cycle_deduped_away']}")
+            print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
+            print(f"Sent new bets - edge path: {alert_decision_counts['send_new_bet_edge']}")
+            print(f"Sent new bets - confirmed follow path: {alert_decision_counts['send_new_bet_confirmed_follow']}")
+            print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
+            print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
+            print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
+            print(f"Skipped new bets - weak: {alert_decision_counts['skip_new_bet_weak']}")
+            print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
+            print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
+            print(f"Skipped duplicate - price worse: {alert_decision_counts['skip_duplicate_price_worse']}")
+
+            print("-" * 80)
+            print("BET AGE SUMMARY - POST-DEDUP BET CANDIDATES")
+            print("=" * 80)
+            print(f"Count: {len(bet_candidates)}")
+            print(f"Avg age (s): {raw_bet_age_summary['avg_age_seconds']}")
+            print(f"Median age (s): {raw_bet_age_summary['median_age_seconds']}")
+            print(f"00-60s: {raw_bet_age_summary['bucket_counts']['00-60s']}")
+            print(f"01-03m: {raw_bet_age_summary['bucket_counts']['01-03m']}")
+            print(f"03-05m: {raw_bet_age_summary['bucket_counts']['03-05m']}")
+            print(f"05-10m: {raw_bet_age_summary['bucket_counts']['05-10m']}")
+            print(f"10-20m: {raw_bet_age_summary['bucket_counts']['10-20m']}")
+            print(f"20m+: {raw_bet_age_summary['bucket_counts']['20m+']}")
+            print(f"Unknown: {raw_bet_age_summary['bucket_counts']['unknown']}")
+
+            print("-" * 80)
+            print("BET AGE SUMMARY - SENT ALERTS")
+            print("=" * 80)
+            print(f"Count: {len(new_bet_alerts)}")
+            print(f"Avg age (s): {sent_bet_age_summary['avg_age_seconds']}")
+            print(f"Median age (s): {sent_bet_age_summary['median_age_seconds']}")
+            print(f"00-60s: {sent_bet_age_summary['bucket_counts']['00-60s']}")
+            print(f"01-03m: {sent_bet_age_summary['bucket_counts']['01-03m']}")
+            print(f"03-05m: {sent_bet_age_summary['bucket_counts']['03-05m']}")
+            print(f"05-10m: {sent_bet_age_summary['bucket_counts']['05-10m']}")
+            print(f"10-20m: {sent_bet_age_summary['bucket_counts']['10-20m']}")
+            print(f"20m+: {sent_bet_age_summary['bucket_counts']['20m+']}")
+            print(f"Unknown: {sent_bet_age_summary['bucket_counts']['unknown']}")
+            print("-" * 80)
+            print("NOTIONAL SIZE DISTRIBUTION (POST-DEDUP BET CANDIDATES)")
+            print("=" * 80)
+            print(f"Avg: {notional_summary['avg']}")
+            print(f"Median: {notional_summary['median']}")
+            for k, v in notional_summary["bucket_counts"].items():
+                print(f"{k}: {v}")
+
+            print("-" * 80)
+            print("SIZE RATIO DISTRIBUTION")
+            print("=" * 80)
+            print(f"Avg: {ratio_summary['avg']}")
+            print(f"Median: {ratio_summary['median']}")
+            for k, v in ratio_summary["bucket_counts"].items():
+                print(f"{k}: {v}")
+
+            print("-" * 80)
+            print("ROI DISTRIBUTION")
+            print("=" * 80)
+            print(f"Avg: {roi_summary['avg']}")
+            print(f"Median: {roi_summary['median']}")
+            for k, v in roi_summary["bucket_counts"].items():
+                print(f"{k}: {v}")
             clv_summary = update_clv_tracker(
                 clv_tracker,
                 result["scored_candidates"],
