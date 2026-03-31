@@ -49,6 +49,7 @@ os.makedirs(DATA_DIR, exist_ok=True)
 CLV_TRACKER_PATH = f"{DATA_DIR}/clv_tracker.json"
 TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
 ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
+SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
 BET_ALERT_MIN_NEW_SHARP_STAKE = 1000
@@ -2416,6 +2417,24 @@ def save_tracked_bets(tracked_bets):
     except Exception as e:
         print(f"[Tracked bets save error] {repr(e)}")
 
+def load_signal_metrics_history():
+    try:
+        with open(SIGNAL_METRICS_HISTORY_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return data
+    except Exception:
+        pass
+    return []
+
+
+def save_signal_metrics_history(signal_metrics_history):
+    try:
+        os.makedirs(os.path.dirname(SIGNAL_METRICS_HISTORY_PATH), exist_ok=True)
+        with open(SIGNAL_METRICS_HISTORY_PATH, "w", encoding="utf-8") as f:
+            json.dump(signal_metrics_history, f, indent=2)
+    except Exception as e:
+        print(f"[Signal metrics history save error] {repr(e)}")
 
 def record_tracked_bet(g, tracked_bets, now_ts):
     if not isinstance(g, dict) or not isinstance(tracked_bets, dict):
@@ -2463,6 +2482,120 @@ def record_tracked_bet(g, tracked_bets, now_ts):
         "resolution_price": None,
     }
 
+def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles):
+    if not isinstance(g, dict) or not isinstance(signal_metrics_history, list):
+        return
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    wallet_profile = {}
+    if isinstance(wallet_profiles, dict):
+        wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
+    try:
+        leaderboard_roi = wallet_profile.get("leaderboard_roi")
+        if leaderboard_roi is not None:
+            leaderboard_roi = float(leaderboard_roi)
+    except Exception:
+        leaderboard_roi = None
+
+    try:
+        total_notional = float(g.get("total_notional", 0) or 0)
+    except Exception:
+        total_notional = 0.0
+
+    try:
+        total_size = float(g.get("total_size", 0) or 0)
+    except Exception:
+        total_size = 0.0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    try:
+        stake_pct = int(g.get("stake_pct", 0) or 0)
+    except Exception:
+        stake_pct = 0
+
+    try:
+        score = int(g.get("score", 0) or 0)
+    except Exception:
+        score = 0
+
+    try:
+        edge_pct = float(g.get("edge_pct", 0) or 0)
+    except Exception:
+        edge_pct = 0.0
+
+    try:
+        current_price = float(g.get("current_price", 0) or 0)
+    except Exception:
+        current_price = 0.0
+
+    try:
+        wallet_entry_price = float(g.get("wallet_entry_price", 0) or 0)
+    except Exception:
+        wallet_entry_price = 0.0
+
+    try:
+        market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
+    except Exception:
+        market_movement_cents = 0.0
+
+    try:
+        followers = int(get_follower_count(g) or 0)
+    except Exception:
+        followers = 0
+
+    try:
+        consensus_score = int(g.get("consensus_score", 0) or 0)
+    except Exception:
+        consensus_score = 0
+
+    try:
+        buy_count = int(g.get("buy_count", 0) or 0)
+    except Exception:
+        buy_count = 0
+
+    try:
+        seconds_since_last_buy = int(g.get("seconds_since_last_buy", 0) or 0)
+    except Exception:
+        seconds_since_last_buy = 0
+
+    row = {
+        "ts": int(now_ts),
+        "wallet": wallet,
+        "slug": str(g.get("slug", "") or "").strip(),
+        "title": str(g.get("title", "") or "").strip(),
+        "market": str(g.get("market", "") or g.get("title", "") or "").strip(),
+        "outcome": str(g.get("outcome", "") or "").strip(),
+        "market_phase": str(g.get("market_phase", "") or "").strip(),
+        "label": str(g.get("label", "") or "").strip(),
+        "stake_pct": stake_pct,
+        "score": score,
+        "size_ratio": round(size_ratio, 4),
+        "total_size": round(total_size, 4),
+        "total_notional": round(total_notional, 2),
+        "leaderboard_roi": leaderboard_roi,
+        "edge_pct": round(edge_pct, 4),
+        "current_price": round(current_price, 6) if current_price else None,
+        "wallet_entry_price": round(wallet_entry_price, 6) if wallet_entry_price else None,
+        "market_movement_cents": round(market_movement_cents, 4),
+        "followers": followers,
+        "consensus_type": str(g.get("consensus_type", "") or "").strip(),
+        "consensus_score": consensus_score,
+        "buy_count": buy_count,
+        "age_bucket": str(g.get("age_bucket", "") or "").strip(),
+        "seconds_since_last_buy": seconds_since_last_buy,
+        "sequence_role": str(g.get("sequence_role", "") or "").strip(),
+    }
+
+    signal_metrics_history.append(row)
+
+    max_rows = 5000
+    if len(signal_metrics_history) > max_rows:
+        del signal_metrics_history[:-max_rows]
 
 TRACKED_BET_RESOLUTION_CACHE = {}
 
@@ -4774,16 +4907,17 @@ if __name__ == "__main__":
     alerted_bets = load_alerted_bets()
     clv_tracker = load_clv_tracker()
     tracked_bets = load_tracked_bets()
-
+    signal_metrics_history = load_signal_metrics_history()
     print(f"BASE_DIR: {BASE_DIR}")
     print(f"DATA_DIR in use: {DATA_DIR}")
     print(f"ALERTED_BETS_PATH: {ALERTED_BETS_PATH}")
     print(f"CLV_TRACKER_PATH: {CLV_TRACKER_PATH}")
     print(f"TRACKED_BETS_PATH: {TRACKED_BETS_PATH}")
+    print(f"SIGNAL_METRICS_HISTORY_PATH: {SIGNAL_METRICS_HISTORY_PATH}")
     print(f"Loaded alerted bets: {len(alerted_bets)}")
     print(f"Loaded CLV tracker rows: {len(clv_tracker)}")
     print(f"Loaded tracked bets: {len(tracked_bets)}")
-
+    print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
     wallet_profiles = init_wallet_profiles(TRACKED_WALLETS)
     enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows)
 
@@ -4923,6 +5057,12 @@ if __name__ == "__main__":
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"]):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
+                    record_signal_metrics_row(
+                        alert_g,
+                        signal_metrics_history,
+                        result["now_ts"],
+                        wallet_profiles,
+                    )
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
@@ -5058,6 +5198,7 @@ if __name__ == "__main__":
             save_clv_tracker(clv_tracker)
             save_tracked_bets(tracked_bets)
             save_alerted_bets(alerted_bets)
+            save_signal_metrics_history(signal_metrics_history)
 
             print("-" * 80)
             print("SNAPSHOT CLV SUMMARY")
