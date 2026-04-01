@@ -1,0 +1,32 @@
+[
+  {
+    "ts": 1775051465,
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
+    "slug": "atp-diallo-molcan-2026-04-01",
+    "title": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
+    "market": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
+    "outcome": "Gabriel Diallo",
+    "market_phase": "Pre-Game",
+    "label": "BET",
+    "stake_pct": 90,
+    "score": 78,
+    "size_ratio": 2.28,
+    "total_size": 1131.8052,
+    "total_notional": 662.0,
+    "leaderboard_roi": 0.009240125207983573,
+    "edge_pct": -0.02,
+    "current_price": 0.585,
+    "wallet_entry_price": 0.5849,
+    "market_movement_cents": 0.01,
+    "followers": 0,
+    "consensus_type": "",
+    "consensus_score": 0,
+    "buy_count": 4,
+    "age_bucket": "old",
+    "seconds_since_last_buy": 912,
+    "sequence_role": "early",
+    "event_start_time": "2026-04-01T14:00:00Z",
+    "minutes_to_start": 8,
+    "time_to_start_bucket": "00-10m"
+  }
+]

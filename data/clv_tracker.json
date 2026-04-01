@@ -12,6 +12,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x6b7c75862e64d6e976d2c08ad9f9b54add6c5f83"
   },
+  "atp-diallo-molcan-2026-04-01||Gabriel Diallo||0x204f72f35326db932158cba6adff0b9a1da95e14": {
+    "entry_price": 0.585,
+    "first_seen_ts": 1775051465,
+    "last_seen_ts": 1775051465,
+    "latest_price": 0.585,
+    "market": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
+    "outcome": "Gabriel Diallo",
+    "slug": "atp-diallo-molcan-2026-04-01",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
+  },
   "atp-jones-zhang-2026-03-30||Jack Pinnington Jones||0x507e52ef684ca2dd91f90a9d26d149dd3288beae": {
     "entry_price": 0.155,
     "first_seen_ts": 1774904187,
@@ -659,7 +672,7 @@
     "slug": "nhl-dal-bos-2026-03-31",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125"
   },
   "nhl-det-pit-2026-03-31||Red Wings||0xaa075924e1dc7cff3b9fab67401126338c4d2125": {
@@ -672,7 +685,7 @@
     "slug": "nhl-det-pit-2026-03-31",
     "snapshot_clv": -0.02,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125"
   },
   "nhl-stl-sj-2026-03-30||Blues||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
@@ -776,7 +789,7 @@
     "slug": "nhl-wpg-chi-2026-03-31",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
   },
   "uef-bih-ita-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14": {
@@ -919,7 +932,7 @@
     "slug": "uef-kvx-tur-2026-03-31-tur",
     "snapshot_clv": -0.02,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xd38ad20037839959d89165cf448568d584b28d26"
   },
   "uef-swe-pol-2026-03-31-pol||Yes||0x5c3a1a602848565bb16165fcd460b00c3d43020b": {
@@ -984,7 +997,7 @@
     "slug": "will-the-next-prime-minister-of-hungary-be-viktor-orbn",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xdbade4c82fb72780a0db9a38f821d8671aba9c95"
   },
   "wta-kalieva-kessler-2026-03-30||Elvina Kalieva||0x204f72f35326db932158cba6adff0b9a1da95e14": {

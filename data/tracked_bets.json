@@ -33,6 +33,40 @@
     "wallet_entry_price": 0.5367,
     "winning_outcome": "Karim Bennani"
   },
+  "atp-diallo-molcan-2026-04-01||Gabriel Diallo||0x204f72f35326db932158cba6adff0b9a1da95e14||1775051465": {
+    "alert_ts": 1775051465,
+    "avg_trade_price": 0.584904,
+    "buy_count": 4,
+    "consensus_score": 0,
+    "consensus_type": "",
+    "current_price_at_alert": 0.585,
+    "edge_pct_at_alert": -0.02,
+    "event_start_time": "2026-04-01T14:00:00Z",
+    "fair_price_at_alert": 0.5849,
+    "followers": 0,
+    "instant_clv_cents_at_alert": null,
+    "label": "BET",
+    "market": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
+    "market_movement_cents_at_alert": 0.01,
+    "market_phase": "Pre-Game",
+    "outcome": "Gabriel Diallo",
+    "reason": "Strong signal (early) | Confirmations: 2 | Conviction=10 | Age: old | Stake base=90%, ratio bump=5%, notional bump=0%, raw=95%, price cap=110%, edge cap=90%, final=90%",
+    "resolution_price": null,
+    "resolved": false,
+    "resolved_ts": null,
+    "result": null,
+    "score": 78,
+    "sequence_role": "early",
+    "size_ratio": 2.28,
+    "slug": "atp-diallo-molcan-2026-04-01",
+    "stake_pct": 90,
+    "title": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
+    "total_size": 1131.805235,
+    "tracked_bet_key": "atp-diallo-molcan-2026-04-01||Gabriel Diallo||0x204f72f35326db932158cba6adff0b9a1da95e14||1775051465",
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
+    "wallet_entry_price": 0.5849,
+    "winning_outcome": null
+  },
   "atp-jones-zhang-2026-03-30||Jack Pinnington Jones||0x507e52ef684ca2dd91f90a9d26d149dd3288beae||1774904187": {
     "alert_ts": 1774904187,
     "avg_trade_price": 0.202655,
@@ -2057,10 +2091,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Bruins",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=40 | Age: dead | Stake base=125%, ratio bump=20%, notional bump=5%, raw=150%, price cap=100%, edge cap=110%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 105,
     "sequence_role": "leader",
     "size_ratio": 10.0,
@@ -2071,7 +2105,7 @@
     "tracked_bet_key": "nhl-dal-bos-2026-03-31||Bruins||0xaa075924e1dc7cff3b9fab67401126338c4d2125||1774977250",
     "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125",
     "wallet_entry_price": 0.46,
-    "winning_outcome": null
+    "winning_outcome": "Bruins"
   },
   "nhl-det-pit-2026-03-31||Red Wings||0xaa075924e1dc7cff3b9fab67401126338c4d2125||1774964253": {
     "alert_ts": 1774964253,
@@ -2091,10 +2125,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Red Wings",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=16 | Age: slightly stale | Stake base=110%, ratio bump=5%, notional bump=0%, raw=115%, price cap=110%, edge cap=90%, final=90%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 89,
     "sequence_role": "leader",
     "size_ratio": 2.27,
@@ -2105,7 +2139,7 @@
     "tracked_bet_key": "nhl-det-pit-2026-03-31||Red Wings||0xaa075924e1dc7cff3b9fab67401126338c4d2125||1774964253",
     "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125",
     "wallet_entry_price": 0.52,
-    "winning_outcome": null
+    "winning_outcome": "Penguins"
   },
   "nhl-stl-sj-2026-03-30||Blues||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697||1774921592": {
     "alert_ts": 1774921592,
@@ -2431,10 +2465,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Blackhawks",
     "reason": "Strong signal (early) | Confirmations: 2 | Conviction=24 | Age: slightly stale | Stake base=125%, ratio bump=5%, notional bump=10%, raw=140%, price cap=100%, edge cap=90%, final=90%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 99,
     "sequence_role": "early",
     "size_ratio": 2.52,
@@ -2445,7 +2479,7 @@
     "tracked_bet_key": "nhl-wpg-chi-2026-03-31||Blackhawks||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697||1774977250",
     "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
     "wallet_entry_price": 0.42,
-    "winning_outcome": null
+    "winning_outcome": "Jets"
   },
   "uef-bih-ita-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774926325": {
     "alert_ts": 1774926325,
@@ -2465,10 +2499,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Over",
     "reason": "Strong signal (leader) | Confirmations: 3 | Conviction=25 | Age: fresh | Stake base=125%, ratio bump=15%, notional bump=0%, raw=140%, price cap=100%, edge cap=110%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 100,
     "sequence_role": "leader",
     "size_ratio": 6.44,
@@ -2479,7 +2513,7 @@
     "tracked_bet_key": "uef-bih-ita-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774926325",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.4693,
-    "winning_outcome": null
+    "winning_outcome": "Under"
   },
   "uef-bih-ita-2026-03-31-total-2pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14||1774921492": {
     "alert_ts": 1774921492,
@@ -2499,10 +2533,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Under",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=5 | Age: stale | Stake base=90%, ratio bump=0%, notional bump=0%, raw=90%, price cap=110%, edge cap=100%, final=90%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 76,
     "sequence_role": "leader",
     "size_ratio": 1.2,
@@ -2513,7 +2547,7 @@
     "tracked_bet_key": "uef-bih-ita-2026-03-31-total-2pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14||1774921492",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.55,
-    "winning_outcome": null
+    "winning_outcome": "Under"
   },
   "uef-bih-ita-2026-03-31-total-2pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14||1774924180": {
     "alert_ts": 1774924180,
@@ -2533,10 +2567,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Under",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=10 | Age: slightly stale | Stake base=100%, ratio bump=5%, notional bump=0%, raw=105%, price cap=110%, edge cap=100%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 83,
     "sequence_role": "leader",
     "size_ratio": 2.12,
@@ -2547,7 +2581,7 @@
     "tracked_bet_key": "uef-bih-ita-2026-03-31-total-2pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14||1774924180",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.53,
-    "winning_outcome": null
+    "winning_outcome": "Under"
   },
   "uef-cze-den-2026-03-31-den||No||0x204f72f35326db932158cba6adff0b9a1da95e14||1774889791": {
     "alert_ts": 1774889791,
@@ -2567,10 +2601,10 @@
     "market_phase": "Pre-Game",
     "outcome": "No",
     "reason": "Strong signal (early) | Confirmations: 2 | Age: fresh | Stake raw=103.125%, edge cap=100%, final stake=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 80,
     "sequence_role": "early",
     "size_ratio": 1.42,
@@ -2581,7 +2615,7 @@
     "tracked_bet_key": "uef-cze-den-2026-03-31-den||No||0x204f72f35326db932158cba6adff0b9a1da95e14||1774889791",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.5,
-    "winning_outcome": null
+    "winning_outcome": "No"
   },
   "uef-cze-den-2026-03-31-draw||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774925579": {
     "alert_ts": 1774925579,
@@ -2601,10 +2635,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (early) | Confirmations: 2 | Conviction=5 | Age: fresh | Stake base=100%, ratio bump=0%, notional bump=0%, raw=100%, price cap=70%, edge cap=110%, final=70%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 80,
     "sequence_role": "early",
     "size_ratio": 1.89,
@@ -2615,7 +2649,7 @@
     "tracked_bet_key": "uef-cze-den-2026-03-31-draw||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774925579",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.29,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-kvx-tur-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774926607": {
     "alert_ts": 1774926607,
@@ -2635,10 +2669,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Over",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=13 | Age: slightly stale | Stake base=100%, ratio bump=5%, notional bump=0%, raw=105%, price cap=100%, edge cap=100%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 86,
     "sequence_role": "leader",
     "size_ratio": 2.18,
@@ -2649,7 +2683,7 @@
     "tracked_bet_key": "uef-kvx-tur-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774926607",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.48,
-    "winning_outcome": null
+    "winning_outcome": "Under"
   },
   "uef-kvx-tur-2026-03-31-tur||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774923520": {
     "alert_ts": 1774923520,
@@ -2669,10 +2703,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=16 | Age: fresh | Stake base=110%, ratio bump=10%, notional bump=0%, raw=120%, price cap=100%, edge cap=90%, final=90% | Upgraded by full cross-wallet consensus (wallets_scored=2, weighted_score=2.9, consensus_score=80, quality_contributors=2, min_edge=-2.0, actual_edge=-1.03)",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 91,
     "sequence_role": "leader",
     "size_ratio": 4.84,
@@ -2683,7 +2717,7 @@
     "tracked_bet_key": "uef-kvx-tur-2026-03-31-tur||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774923520",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.48,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-kvx-tur-2026-03-31-tur||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774923615": {
     "alert_ts": 1774923615,
@@ -2703,10 +2737,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=16 | Age: slightly stale | Stake base=110%, ratio bump=10%, notional bump=0%, raw=120%, price cap=100%, edge cap=110%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 89,
     "sequence_role": "leader",
     "size_ratio": 4.19,
@@ -2717,7 +2751,7 @@
     "tracked_bet_key": "uef-kvx-tur-2026-03-31-tur||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14||1774923615",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.48,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-kvx-tur-2026-03-31-tur||Yes||0xd38ad20037839959d89165cf448568d584b28d26||1774977250": {
     "alert_ts": 1774977250,
@@ -2737,10 +2771,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=20 | Age: old | Stake base=110%, ratio bump=5%, notional bump=5%, raw=120%, price cap=110%, edge cap=100%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 90,
     "sequence_role": "leader",
     "size_ratio": 2.29,
@@ -2751,7 +2785,7 @@
     "tracked_bet_key": "uef-kvx-tur-2026-03-31-tur||Yes||0xd38ad20037839959d89165cf448568d584b28d26||1774977250",
     "wallet": "0xd38ad20037839959d89165cf448568d584b28d26",
     "wallet_entry_price": 0.51,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-kvx-tur-2026-03-31-tur||Yes||0xd38ad20037839959d89165cf448568d584b28d26||1774977712": {
     "alert_ts": 1774977712,
@@ -2771,10 +2805,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (leader) | Confirmations: 3 | Conviction=20 | Age: very old | Stake base=110%, ratio bump=5%, notional bump=5%, raw=120%, price cap=100%, edge cap=150%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 91,
     "sequence_role": "leader",
     "size_ratio": 2.29,
@@ -2785,7 +2819,7 @@
     "tracked_bet_key": "uef-kvx-tur-2026-03-31-tur||Yes||0xd38ad20037839959d89165cf448568d584b28d26||1774977712",
     "wallet": "0xd38ad20037839959d89165cf448568d584b28d26",
     "wallet_entry_price": 0.51,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-swe-pol-2026-03-31-pol||Yes||0x5c3a1a602848565bb16165fcd460b00c3d43020b||1774929943": {
     "alert_ts": 1774929943,
@@ -2805,10 +2839,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Yes",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=10 | Age: dead | Stake base=80%, ratio bump=5%, notional bump=0%, raw=85%, price cap=70%, edge cap=90%, final=70%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 71,
     "sequence_role": "leader",
     "size_ratio": 2.93,
@@ -2819,7 +2853,7 @@
     "tracked_bet_key": "uef-swe-pol-2026-03-31-pol||Yes||0x5c3a1a602848565bb16165fcd460b00c3d43020b||1774929943",
     "wallet": "0x5c3a1a602848565bb16165fcd460b00c3d43020b",
     "wallet_entry_price": 0.25,
-    "winning_outcome": null
+    "winning_outcome": "No"
   },
   "uef-swe-pol-2026-03-31-swe||No||0x204f72f35326db932158cba6adff0b9a1da95e14||1774929943": {
     "alert_ts": 1774929943,
@@ -2839,10 +2873,10 @@
     "market_phase": "Pre-Game",
     "outcome": "No",
     "reason": "Strong signal (leader) | Confirmations: 2 | Conviction=10 | Age: fresh | Stake base=100%, ratio bump=5%, notional bump=0%, raw=105%, price cap=110%, edge cap=100%, final=100%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "LOSS",
     "score": 85,
     "sequence_role": "leader",
     "size_ratio": 2.9,
@@ -2853,7 +2887,7 @@
     "tracked_bet_key": "uef-swe-pol-2026-03-31-swe||No||0x204f72f35326db932158cba6adff0b9a1da95e14||1774929943",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.54,
-    "winning_outcome": null
+    "winning_outcome": "Yes"
   },
   "uef-swe-pol-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774888599": {
     "alert_ts": 1774888599,
@@ -2873,10 +2907,10 @@
     "market_phase": "Pre-Game",
     "outcome": "Over",
     "reason": "Strong signal (leader) | Confirmations: 2 | Age: stale | Stake raw=103.125%, edge cap=90%, final stake=90%",
-    "resolution_price": null,
-    "resolved": false,
-    "resolved_ts": null,
-    "result": null,
+    "resolution_price": 1.0,
+    "resolved": true,
+    "resolved_ts": 1775051465,
+    "result": "WIN",
     "score": 80,
     "sequence_role": "leader",
     "size_ratio": 1.45,
@@ -2887,7 +2921,7 @@
     "tracked_bet_key": "uef-swe-pol-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14||1774888599",
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14",
     "wallet_entry_price": 0.43,
-    "winning_outcome": null
+    "winning_outcome": "Over"
   },
   "us-x-iran-ceasefire-by-april-15-182-528-637||No||0xdbade4c82fb72780a0db9a38f821d8671aba9c95||1774926701": {
     "alert_ts": 1774926701,
