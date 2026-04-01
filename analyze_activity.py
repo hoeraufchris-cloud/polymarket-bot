@@ -2563,6 +2563,10 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
     except Exception:
         seconds_since_last_buy = 0
 
+    event_start_time = g.get("event_start_time")
+    minutes_to_start = get_minutes_to_start(event_start_time, now_ts)
+    time_to_start_bucket = get_time_to_start_bucket(minutes_to_start)
+
     row = {
         "ts": int(now_ts),
         "wallet": wallet,
@@ -2589,6 +2593,9 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
         "age_bucket": str(g.get("age_bucket", "") or "").strip(),
         "seconds_since_last_buy": seconds_since_last_buy,
         "sequence_role": str(g.get("sequence_role", "") or "").strip(),
+        "event_start_time": event_start_time,
+        "minutes_to_start": minutes_to_start,
+        "time_to_start_bucket": time_to_start_bucket,
     }
 
     signal_metrics_history.append(row)
@@ -4201,6 +4208,46 @@ def summarize_numeric_distribution(values, buckets):
                 break
 
     return summary
+
+def get_minutes_to_start(event_start_time, now_ts):
+    if not event_start_time:
+        return None
+
+    try:
+        from datetime import datetime, timezone
+
+        event_dt = datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+        now_dt = datetime.fromtimestamp(int(now_ts), tz=timezone.utc)
+        minutes_to_start = int((event_dt - now_dt).total_seconds() / 60)
+        return minutes_to_start
+    except Exception:
+        return None
+
+
+def get_time_to_start_bucket(minutes_to_start):
+    if minutes_to_start is None:
+        return "unknown"
+
+    try:
+        m = int(minutes_to_start)
+    except Exception:
+        return "unknown"
+
+    if m < 0:
+        return "live_or_started"
+    if m <= 10:
+        return "00-10m"
+    if m <= 30:
+        return "10-30m"
+    if m <= 60:
+        return "30-60m"
+    if m <= 180:
+        return "01-03h"
+    if m <= 360:
+        return "03-06h"
+    if m <= 720:
+        return "06-12h"
+    return "12h+"
 
 def run_pipeline(wallet_profiles):
     global TRACKED_WALLETS
