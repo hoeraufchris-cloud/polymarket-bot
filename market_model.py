@@ -16,6 +16,9 @@ os.makedirs(DATA_DIR, exist_ok=True)
 SIGNAL_METRICS_HISTORY_PATH = os.path.join(DATA_DIR, "signal_metrics_history.json")
 MARKET_MODEL_OUTPUT_PATH = os.path.join(DATA_DIR, "market_model_output.json")
 
+MODEL_MIN_MINUTES_TO_START = 0
+MODEL_MAX_MINUTES_TO_START = 60
+
 
 def load_signal_metrics_history():
     try:
@@ -106,6 +109,16 @@ def get_model_window_bucket(minutes_to_start):
         return "06-12h"
     return "12h+"
 
+def is_in_model_window(minutes_to_start):
+    if minutes_to_start is None:
+        return False
+
+    try:
+        m = int(minutes_to_start)
+    except Exception:
+        return False
+
+    return MODEL_MIN_MINUTES_TO_START <= m <= MODEL_MAX_MINUTES_TO_START
 
 def group_rows_by_market_outcome(rows):
     grouped = defaultdict(list)
@@ -384,6 +397,21 @@ def build_recommendations(rows):
         if not snapshot:
             continue
 
+        raw_minutes = snapshot.get("minutes_to_start")
+
+        try:
+            minutes_to_start = int(raw_minutes)
+        except Exception:
+            continue
+
+        if minutes_to_start < MODEL_MIN_MINUTES_TO_START:
+            continue
+
+        if minutes_to_start > MODEL_MAX_MINUTES_TO_START:
+            continue
+
+        snapshot["minutes_to_start"] = minutes_to_start
+
         model_output = score_market_snapshot(snapshot)
         if not model_output:
             continue
@@ -453,6 +481,10 @@ if __name__ == "__main__":
     print(f"DATA_DIR in use: {DATA_DIR}")
     print(f"SIGNAL_METRICS_HISTORY_PATH: {SIGNAL_METRICS_HISTORY_PATH}")
     print(f"MARKET_MODEL_OUTPUT_PATH: {MARKET_MODEL_OUTPUT_PATH}")
+    print(
+        f"MODEL WINDOW: {MODEL_MIN_MINUTES_TO_START} to "
+        f"{MODEL_MAX_MINUTES_TO_START} minutes before start"
+    )
 
     signal_metrics_history = load_signal_metrics_history()
 
