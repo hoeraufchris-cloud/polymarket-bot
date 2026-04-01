@@ -17,7 +17,7 @@ SIGNAL_METRICS_HISTORY_PATH = os.path.join(DATA_DIR, "signal_metrics_history.jso
 MARKET_MODEL_OUTPUT_PATH = os.path.join(DATA_DIR, "market_model_output.json")
 
 MODEL_MIN_MINUTES_TO_START = 0
-MODEL_MAX_MINUTES_TO_START = 60
+MODEL_MAX_MINUTES_TO_START = 180
 
 
 def load_signal_metrics_history():
@@ -387,6 +387,36 @@ def score_market_snapshot(snapshot):
         "reasons": reasons,
     }
 
+def classify_signal_stage(snapshot, model_output):
+    if not isinstance(snapshot, dict) or not isinstance(model_output, dict):
+        return "discard"
+
+    unique_wallet_count = parse_int(snapshot.get("unique_wallet_count"), 0)
+    total_notional = parse_float(snapshot.get("total_notional"), 0.0)
+    max_size_ratio = parse_float(snapshot.get("max_size_ratio"), 0.0)
+    max_followers = parse_int(snapshot.get("max_followers"), 0)
+    max_consensus_score = parse_int(snapshot.get("max_consensus_score"), 0)
+    minutes_to_start = parse_int(snapshot.get("minutes_to_start"), -999999)
+    model_score = parse_int(model_output.get("model_score"), 0)
+
+    if (
+        unique_wallet_count >= 2
+        or max_followers >= 1
+        or max_consensus_score >= 50
+    ):
+        if model_score >= 30 and 0 <= minutes_to_start <= MODEL_MAX_MINUTES_TO_START:
+            return "confirmed"
+
+    if (
+        unique_wallet_count == 1
+        and total_notional >= 5000
+        and max_size_ratio >= 3
+        and model_score >= 30
+        and 60 < minutes_to_start <= MODEL_MAX_MINUTES_TO_START
+    ):
+        return "early_watch"
+
+    return "discard"
 
 def build_recommendations(rows):
     grouped = group_rows_by_market_outcome(rows)
@@ -416,8 +446,13 @@ def build_recommendations(rows):
         if not model_output:
             continue
 
+        signal_stage = classify_signal_stage(snapshot, model_output)
+        if signal_stage == "discard":
+            continue
+
         row = dict(snapshot)
         row.update(model_output)
+        row["signal_stage"] = signal_stage
         recommendations.append(row)
 
     recommendations.sort(
@@ -433,9 +468,21 @@ def build_recommendations(rows):
 
 
 def save_recommendations_json(recommendations):
+    early_watch_count = 0
+    confirmed_count = 0
+
+    for row in recommendations:
+        stage = str(row.get("signal_stage", "") or "").strip().lower()
+        if stage == "early_watch":
+            early_watch_count += 1
+        elif stage == "confirmed":
+            confirmed_count += 1
+
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "recommendation_count": len(recommendations),
+        "early_watch_count": early_watch_count,
+        "confirmed_count": confirmed_count,
         "recommendations": recommendations,
     }
 
@@ -455,11 +502,24 @@ def print_recommendations(recommendations, limit=25):
         print("No recommendations available.")
         return
 
+    early_watch_count = sum(
+        1 for row in recommendations
+        if str(row.get("signal_stage", "") or "").lower() == "early_watch"
+    )
+    confirmed_count = sum(
+        1 for row in recommendations
+        if str(row.get("signal_stage", "") or "").lower() == "confirmed"
+    )
+
+    print(f"Early watch count: {early_watch_count}")
+    print(f"Confirmed count: {confirmed_count}")
+
     for row in recommendations[:limit]:
         print("-" * 80)
         print(f"Market: {row.get('market', 'N/A')}")
         print(f"Outcome: {row.get('outcome', 'N/A')}")
         print(f"Recommendation: {row.get('recommendation', 'N/A')}")
+        print(f"Signal stage: {row.get('signal_stage', 'N/A')}")
         print(f"Model score: {row.get('model_score', 'N/A')}")
         print(f"Recommended stake %: {row.get('recommended_stake_pct', 'N/A')}")
         print(f"Minutes to start: {row.get('minutes_to_start', 'N/A')}")
