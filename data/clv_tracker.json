@@ -15,14 +15,14 @@
   "atp-diallo-molcan-2026-04-01||Gabriel Diallo||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.585,
     "first_seen_ts": 1775051465,
-    "last_seen_ts": 1775051465,
-    "latest_price": 0.585,
+    "last_seen_ts": 1775054136,
+    "latest_price": 0.55,
     "market": "Bucharest Open: Gabriel Diallo vs Alex Molcan",
     "outcome": "Gabriel Diallo",
     "slug": "atp-diallo-molcan-2026-04-01",
-    "snapshot_clv": 0.0,
+    "snapshot_clv": -0.035,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": false,
+    "snapshot_clv_ready": true,
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
   },
   "atp-jones-zhang-2026-03-30||Jack Pinnington Jones||0x507e52ef684ca2dd91f90a9d26d149dd3288beae": {
@@ -37,6 +37,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x507e52ef684ca2dd91f90a9d26d149dd3288beae"
+  },
+  "atp-shelton-zhang-2026-04-01||Ben Shelton||0x9cb990f1862568a63d8601efeebe0304225c32f2": {
+    "entry_price": 0.715,
+    "first_seen_ts": 1775065855,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.715,
+    "market": "US Men's Clay Court Championships: Ben Shelton vs Zhizhen Zhang",
+    "outcome": "Ben Shelton",
+    "slug": "atp-shelton-zhang-2026-04-01",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x9cb990f1862568a63d8601efeebe0304225c32f2"
   },
   "cbb-nmx-tulsa-2026-04-02-total-160pt5||Over||0xe24838258b572f1771dffba3bcdde57a78def293": {
     "entry_price": 0.51,
@@ -194,6 +207,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
+  "mlb-laa-chc-2026-04-01-total-6pt5||Over||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.445,
+    "first_seen_ts": 1775065855,
+    "last_seen_ts": 1775065855,
+    "latest_price": 0.445,
+    "market": "Los Angeles Angels vs. Chicago Cubs: O/U 6.5",
+    "outcome": "Over",
+    "slug": "mlb-laa-chc-2026-04-01-total-6pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
   "mlb-min-kc-2026-03-30-total-9pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.535,
     "first_seen_ts": 1774900909,
@@ -206,6 +232,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
+  },
+  "mlb-nyy-sea-2026-04-01-total-7pt5||Under||0x13414a77a4be48988851c73dfd824d0168e70853": {
+    "entry_price": 0.585,
+    "first_seen_ts": 1775065855,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.585,
+    "market": "New York Yankees vs. Seattle Mariners: O/U 7.5",
+    "outcome": "Under",
+    "slug": "mlb-nyy-sea-2026-04-01-total-7pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x13414a77a4be48988851c73dfd824d0168e70853"
   },
   "mlb-oak-atl-2026-03-30-total-9pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.565,
@@ -245,6 +284,32 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xd6a3f0ec6c4a8ad680d580610c82ca57ff139489"
+  },
+  "mlb-oak-atl-2026-04-01-total-8pt5||Over||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.425,
+    "first_seen_ts": 1775054136,
+    "last_seen_ts": 1775054812,
+    "latest_price": 0.425,
+    "market": "Athletics vs. Atlanta Braves: O/U 8.5",
+    "outcome": "Over",
+    "slug": "mlb-oak-atl-2026-04-01-total-8pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
+  "mlb-pit-cin-2026-04-01-total-7pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.495,
+    "first_seen_ts": 1775054136,
+    "last_seen_ts": 1775055163,
+    "latest_price": 0.495,
+    "market": "Pittsburgh Pirates vs. Cincinnati Reds: O/U 7.5",
+    "outcome": "Under",
+    "slug": "mlb-pit-cin-2026-04-01-total-7pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "nba-bos-atl-2026-03-30-spread-home-2pt5||Celtics||0xbddf61af533ff524d27154e589d2d7a81510c684": {
     "entry_price": 0.495,
@@ -428,6 +493,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
+  "nba-mil-hou-2026-04-01-total-218pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.53,
+    "first_seen_ts": 1775066680,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.53,
+    "market": "Bucks vs. Rockets: O/U 218.5",
+    "outcome": "Under",
+    "slug": "nba-mil-hou-2026-04-01-total-218pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
   "nba-min-dal-2026-03-30-spread-away-7pt5||Mavericks||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
     "entry_price": 0.445,
     "first_seen_ts": 1774916588,
@@ -466,6 +544,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x1bc0d88ca86b9049cf05d642e634836d5ddf4429"
+  },
+  "nba-nyk-mem-2026-04-01-spread-away-15pt5||Knicks||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.435,
+    "first_seen_ts": 1775066680,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.435,
+    "market": "Spread: Knicks (-15.5)",
+    "outcome": "Knicks",
+    "slug": "nba-nyk-mem-2026-04-01-spread-away-15pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "nba-phi-mia-2026-03-30-spread-away-1pt5||76ers||0x84dbb7103982e3617704a2ed7d5b39691952aeeb": {
     "entry_price": 0.515,
@@ -623,6 +714,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0xd6a3f0ec6c4a8ad680d580610c82ca57ff139489"
   },
+  "nba-sac-tor-2026-04-01||Kings||0x84dbb7103982e3617704a2ed7d5b39691952aeeb": {
+    "entry_price": 0.145,
+    "first_seen_ts": 1775065855,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.145,
+    "market": "Kings vs. Raptors",
+    "outcome": "Kings",
+    "slug": "nba-sac-tor-2026-04-01",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
+  },
   "nba-was-lal-2026-03-30-spread-home-15pt5||Lakers||0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0": {
     "entry_price": 0.525,
     "first_seen_ts": 1774908258,
@@ -661,6 +765,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0"
+  },
+  "nhl-ana-sj-2026-04-01||Sharks||0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee": {
+    "entry_price": 0.505,
+    "first_seen_ts": 1775053166,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.505,
+    "market": "Ducks vs. Sharks",
+    "outcome": "Sharks",
+    "slug": "nhl-ana-sj-2026-04-01",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee"
   },
   "nhl-dal-bos-2026-03-31||Bruins||0xaa075924e1dc7cff3b9fab67401126338c4d2125": {
     "entry_price": 0.455,
@@ -977,12 +1094,12 @@
   "us-x-iran-ceasefire-by-april-15-182-528-637||No||0xdbade4c82fb72780a0db9a38f821d8671aba9c95": {
     "entry_price": 0.795,
     "first_seen_ts": 1774926701,
-    "last_seen_ts": 1774933317,
-    "latest_price": 0.815,
+    "last_seen_ts": 1775066680,
+    "latest_price": 0.805,
     "market": "US x Iran ceasefire by April 15?",
     "outcome": "No",
     "slug": "us-x-iran-ceasefire-by-april-15-182-528-637",
-    "snapshot_clv": 0.02,
+    "snapshot_clv": 0.01,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xdbade4c82fb72780a0db9a38f821d8671aba9c95"

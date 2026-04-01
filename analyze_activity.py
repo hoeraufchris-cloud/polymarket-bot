@@ -5,6 +5,7 @@ import urllib.request
 import urllib.parse
 import re
 from collections import defaultdict
+from market_model import build_recommendations, save_recommendations_json
 
 PUSHOVER_ENABLED = True
 PUSHOVER_USER_KEYS = [
@@ -57,6 +58,18 @@ BET_ALERT_MIN_NEW_BUYS = 2
 BET_ALERT_MIN_FOLLOWER_INCREASE = 1
 BET_ALERT_MIN_SCORE_IMPROVEMENT = 5
 BET_ALERT_MIN_CONSENSUS_SCORE_IMPROVEMENT = 20
+BET_ALERT_SOFT_MIN_TOTAL_NOTIONAL = 1000
+BET_ALERT_SOFT_MIN_SIZE_RATIO = 1.5
+BET_ALERT_SOFT_MIN_LEADERBOARD_ROI = 0.02
+BET_ALERT_SOFT_STRONG_SCORE = 85
+BET_ALERT_SOFT_STRONG_TOTAL_NOTIONAL = 5000
+BET_ALERT_SOFT_STRONG_SIZE_RATIO = 2.5
+BET_ALERT_SOFT_STRONG_LEADERBOARD_ROI = 0.05
+BET_ALERT_SOFT_STRONG_FOLLOWERS = 1
+BET_ALERT_SOFT_STRONG_CONSENSUS_SCORE = 60
+BET_ALERT_SOFT_STRONG_MAX_MINUTES_TO_START = 30
+BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_ONE_FAIL = 2
+BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_MULTI_FAIL = 3
 
 
 def fetch_json_url(url):
@@ -3240,6 +3253,123 @@ def get_possible_flip_reason(g, opposite_prior):
 
     return None
 
+def passes_new_bet_soft_floors(g, wallet_profiles):
+    if not isinstance(g, dict):
+        return False, {
+            "soft_fail_count": 999,
+            "justification_count": 0,
+            "soft_fail_reasons": ["invalid_bet"],
+            "justification_reasons": [],
+        }
+
+    try:
+        total_notional = float(g.get("total_notional", 0) or 0)
+    except Exception:
+        total_notional = 0.0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    wallet_profile = {}
+    if isinstance(wallet_profiles, dict):
+        wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
+    leaderboard_roi = wallet_profile.get("leaderboard_roi")
+    try:
+        leaderboard_roi = float(leaderboard_roi) if leaderboard_roi is not None else None
+    except Exception:
+        leaderboard_roi = None
+
+    soft_fail_reasons = []
+
+    if total_notional < BET_ALERT_SOFT_MIN_TOTAL_NOTIONAL:
+        soft_fail_reasons.append("low_notional")
+
+    if size_ratio < BET_ALERT_SOFT_MIN_SIZE_RATIO:
+        soft_fail_reasons.append("low_ratio")
+
+    if leaderboard_roi is None or leaderboard_roi < BET_ALERT_SOFT_MIN_LEADERBOARD_ROI:
+        soft_fail_reasons.append("low_roi")
+
+    justification_reasons = []
+
+    try:
+        score = int(g.get("score", 0) or 0)
+    except Exception:
+        score = 0
+
+    if score >= BET_ALERT_SOFT_STRONG_SCORE:
+        justification_reasons.append("strong_score")
+
+    if total_notional >= BET_ALERT_SOFT_STRONG_TOTAL_NOTIONAL:
+        justification_reasons.append("strong_notional")
+
+    if size_ratio >= BET_ALERT_SOFT_STRONG_SIZE_RATIO:
+        justification_reasons.append("strong_ratio")
+
+    if leaderboard_roi is not None and leaderboard_roi >= BET_ALERT_SOFT_STRONG_LEADERBOARD_ROI:
+        justification_reasons.append("strong_roi")
+
+    try:
+        followers = int(get_follower_count(g) or 0)
+    except Exception:
+        followers = 0
+
+    if followers >= BET_ALERT_SOFT_STRONG_FOLLOWERS:
+        justification_reasons.append("followers")
+
+    try:
+        consensus_score = int(g.get("consensus_score", 0) or 0)
+    except Exception:
+        consensus_score = 0
+
+    if consensus_score >= BET_ALERT_SOFT_STRONG_CONSENSUS_SCORE:
+        justification_reasons.append("consensus")
+
+    try:
+        minutes_to_start = g.get("minutes_to_start")
+        if minutes_to_start is None:
+            event_start_time = g.get("event_start_time")
+            if event_start_time:
+                from datetime import datetime, timezone
+                event_dt = datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+                now_dt = datetime.now(timezone.utc)
+                minutes_to_start = int((event_dt - now_dt).total_seconds() / 60)
+    except Exception:
+        minutes_to_start = None
+
+    if (
+        minutes_to_start is not None
+        and 0 <= int(minutes_to_start) <= BET_ALERT_SOFT_STRONG_MAX_MINUTES_TO_START
+    ):
+        justification_reasons.append("close_to_start")
+
+    soft_fail_count = len(soft_fail_reasons)
+    justification_count = len(justification_reasons)
+
+    if soft_fail_count == 0:
+        return True, {
+            "soft_fail_count": soft_fail_count,
+            "justification_count": justification_count,
+            "soft_fail_reasons": soft_fail_reasons,
+            "justification_reasons": justification_reasons,
+        }
+
+    required_justifications = BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_ONE_FAIL
+    if soft_fail_count >= 2:
+        required_justifications = BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_MULTI_FAIL
+
+    passes = justification_count >= required_justifications
+
+    return passes, {
+        "soft_fail_count": soft_fail_count,
+        "justification_count": justification_count,
+        "soft_fail_reasons": soft_fail_reasons,
+        "justification_reasons": justification_reasons,
+    }
 
 def is_possible_flip(g, opposite_prior):
     return get_possible_flip_reason(g, opposite_prior) is not None
@@ -5246,6 +5376,46 @@ if __name__ == "__main__":
             save_tracked_bets(tracked_bets)
             save_alerted_bets(alerted_bets)
             save_signal_metrics_history(signal_metrics_history)
+
+            market_model_recommendations = build_recommendations(signal_metrics_history)
+            save_recommendations_json(market_model_recommendations)
+
+            print("-" * 80)
+            print("MARKET MODEL SUMMARY")
+            print("=" * 80)
+            print(f"Saved market model recommendations: {len(market_model_recommendations)}")
+
+            top_model_bets = [
+                row for row in market_model_recommendations
+                if str(row.get("recommendation", "") or "").upper() == "BET"
+            ]
+
+            top_model_leans = [
+                row for row in market_model_recommendations
+                if str(row.get("recommendation", "") or "").upper() == "LEAN"
+            ]
+
+            print(f"Model BET count: {len(top_model_bets)}")
+            print(f"Model LEAN count: {len(top_model_leans)}")
+
+            if top_model_bets:
+                top_row = top_model_bets[0]
+                print(
+                    f"Top model BET: {top_row.get('market', 'N/A')} | "
+                    f"{top_row.get('outcome', 'N/A')} | "
+                    f"score={top_row.get('model_score', 'N/A')} | "
+                    f"mins_to_start={top_row.get('minutes_to_start', 'N/A')}"
+                )
+            elif top_model_leans:
+                top_row = top_model_leans[0]
+                print(
+                    f"Top model LEAN: {top_row.get('market', 'N/A')} | "
+                    f"{top_row.get('outcome', 'N/A')} | "
+                    f"score={top_row.get('model_score', 'N/A')} | "
+                    f"mins_to_start={top_row.get('minutes_to_start', 'N/A')}"
+                )
+            else:
+                print("Top model signal: None")
 
             print("-" * 80)
             print("SNAPSHOT CLV SUMMARY")
