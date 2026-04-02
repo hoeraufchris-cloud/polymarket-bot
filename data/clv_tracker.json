@@ -22,7 +22,7 @@
     "slug": "atp-diallo-molcan-2026-04-01",
     "snapshot_clv": -0.035,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
   },
   "atp-jones-zhang-2026-03-30||Jack Pinnington Jones||0x507e52ef684ca2dd91f90a9d26d149dd3288beae": {
@@ -41,14 +41,14 @@
   "atp-shelton-zhang-2026-04-01||Ben Shelton||0x9cb990f1862568a63d8601efeebe0304225c32f2": {
     "entry_price": 0.715,
     "first_seen_ts": 1775065855,
-    "last_seen_ts": 1775066680,
-    "latest_price": 0.715,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.845,
     "market": "US Men's Clay Court Championships: Ben Shelton vs Zhizhen Zhang",
     "outcome": "Ben Shelton",
     "slug": "atp-shelton-zhang-2026-04-01",
-    "snapshot_clv": 0.0,
+    "snapshot_clv": 0.13,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x9cb990f1862568a63d8601efeebe0304225c32f2"
   },
   "cbb-nmx-tulsa-2026-04-02-total-160pt5||Over||0xe24838258b572f1771dffba3bcdde57a78def293": {
@@ -102,6 +102,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd"
+  },
+  "es2-rso-eib-2026-04-02-eib||No||0x507e52ef684ca2dd91f90a9d26d149dd3288beae": {
+    "entry_price": 0.65,
+    "first_seen_ts": 1775076332,
+    "last_seen_ts": 1775076332,
+    "latest_price": 0.65,
+    "market": "Will SD Eibar win on 2026-04-02?",
+    "outcome": "No",
+    "slug": "es2-rso-eib-2026-04-02-eib",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x507e52ef684ca2dd91f90a9d26d149dd3288beae"
   },
   "fif-cyp-mol-2026-03-30-cyp||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.58,
@@ -217,7 +230,7 @@
     "slug": "mlb-laa-chc-2026-04-01-total-6pt5",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "mlb-min-kc-2026-03-30-total-9pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14": {
@@ -236,14 +249,14 @@
   "mlb-nyy-sea-2026-04-01-total-7pt5||Under||0x13414a77a4be48988851c73dfd824d0168e70853": {
     "entry_price": 0.585,
     "first_seen_ts": 1775065855,
-    "last_seen_ts": 1775066680,
-    "latest_price": 0.585,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.0005,
     "market": "New York Yankees vs. Seattle Mariners: O/U 7.5",
     "outcome": "Under",
     "slug": "mlb-nyy-sea-2026-04-01-total-7pt5",
-    "snapshot_clv": 0.0,
+    "snapshot_clv": -0.5845,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x13414a77a4be48988851c73dfd824d0168e70853"
   },
   "mlb-oak-atl-2026-03-30-total-9pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14": {
@@ -295,7 +308,7 @@
     "slug": "mlb-oak-atl-2026-04-01-total-8pt5",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "mlb-pit-cin-2026-04-01-total-7pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
@@ -308,7 +321,7 @@
     "slug": "mlb-pit-cin-2026-04-01-total-7pt5",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "nba-bos-atl-2026-03-30-spread-home-2pt5||Celtics||0xbddf61af533ff524d27154e589d2d7a81510c684": {
@@ -401,6 +414,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0"
+  },
+  "nba-den-uta-2026-04-01-total-249pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.49,
+    "first_seen_ts": 1775090008,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.49,
+    "market": "Nuggets vs. Jazz: O/U 249.5",
+    "outcome": "Under",
+    "slug": "nba-den-uta-2026-04-01-total-249pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "nba-det-okc-2026-03-30-spread-home-11pt5||Pistons||0xbddf61af533ff524d27154e589d2d7a81510c684": {
     "entry_price": 0.475,
@@ -548,12 +574,12 @@
   "nba-nyk-mem-2026-04-01-spread-away-15pt5||Knicks||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
     "entry_price": 0.435,
     "first_seen_ts": 1775066680,
-    "last_seen_ts": 1775066680,
-    "latest_price": 0.435,
+    "last_seen_ts": 1775075952,
+    "latest_price": 0.475,
     "market": "Spread: Knicks (-15.5)",
     "outcome": "Knicks",
     "slug": "nba-nyk-mem-2026-04-01-spread-away-15pt5",
-    "snapshot_clv": 0.0,
+    "snapshot_clv": 0.04,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
@@ -636,6 +662,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
+  "nba-phi-was-2026-04-01-spread-away-14pt5||76ers||0x84dbb7103982e3617704a2ed7d5b39691952aeeb": {
+    "entry_price": 0.485,
+    "first_seen_ts": 1775075667,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.72,
+    "market": "Spread: 76ers (-14.5)",
+    "outcome": "76ers",
+    "slug": "nba-phi-was-2026-04-01-spread-away-14pt5",
+    "snapshot_clv": 0.235,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
+  },
   "nba-phx-mem-2026-03-30-total-227pt5||Over||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
     "entry_price": 0.525,
     "first_seen_ts": 1774914195,
@@ -717,15 +756,28 @@
   "nba-sac-tor-2026-04-01||Kings||0x84dbb7103982e3617704a2ed7d5b39691952aeeb": {
     "entry_price": 0.145,
     "first_seen_ts": 1775065855,
-    "last_seen_ts": 1775066680,
-    "latest_price": 0.145,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.155,
     "market": "Kings vs. Raptors",
     "outcome": "Kings",
     "slug": "nba-sac-tor-2026-04-01",
+    "snapshot_clv": 0.01,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
+  },
+  "nba-sas-lac-2026-04-02||Clippers||0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c": {
+    "entry_price": 0.385,
+    "first_seen_ts": 1775137325,
+    "last_seen_ts": 1775137325,
+    "latest_price": 0.385,
+    "market": "Spurs vs. Clippers",
+    "outcome": "Clippers",
+    "slug": "nba-sas-lac-2026-04-02",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
-    "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
+    "snapshot_clv_ready": false,
+    "wallet": "0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c"
   },
   "nba-was-lal-2026-03-30-spread-home-15pt5||Lakers||0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0": {
     "entry_price": 0.525,
@@ -766,17 +818,30 @@
     "snapshot_clv_ready": false,
     "wallet": "0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0"
   },
+  "nhl-ana-sj-2026-04-01||Ducks||0xaa075924e1dc7cff3b9fab67401126338c4d2125": {
+    "entry_price": 0.485,
+    "first_seen_ts": 1775088489,
+    "last_seen_ts": 1775090008,
+    "latest_price": 0.495,
+    "market": "Ducks vs. Sharks",
+    "outcome": "Ducks",
+    "slug": "nhl-ana-sj-2026-04-01",
+    "snapshot_clv": 0.01,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125"
+  },
   "nhl-ana-sj-2026-04-01||Sharks||0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee": {
     "entry_price": 0.505,
     "first_seen_ts": 1775053166,
-    "last_seen_ts": 1775066680,
+    "last_seen_ts": 1775090008,
     "latest_price": 0.505,
     "market": "Ducks vs. Sharks",
     "outcome": "Sharks",
     "slug": "nhl-ana-sj-2026-04-01",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee"
   },
   "nhl-dal-bos-2026-03-31||Bruins||0xaa075924e1dc7cff3b9fab67401126338c4d2125": {
@@ -1094,12 +1159,12 @@
   "us-x-iran-ceasefire-by-april-15-182-528-637||No||0xdbade4c82fb72780a0db9a38f821d8671aba9c95": {
     "entry_price": 0.795,
     "first_seen_ts": 1774926701,
-    "last_seen_ts": 1775066680,
-    "latest_price": 0.805,
+    "last_seen_ts": 1775088489,
+    "latest_price": 0.815,
     "market": "US x Iran ceasefire by April 15?",
     "outcome": "No",
     "slug": "us-x-iran-ceasefire-by-april-15-182-528-637",
-    "snapshot_clv": 0.01,
+    "snapshot_clv": 0.02,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xdbade4c82fb72780a0db9a38f821d8671aba9c95"
@@ -1126,6 +1191,19 @@
     "outcome": "Elvina Kalieva",
     "slug": "wta-kalieva-kessler-2026-03-30",
     "snapshot_clv": -0.09,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
+  },
+  "wta-keys-vekic-2026-04-01||Madison Keys||0x204f72f35326db932158cba6adff0b9a1da95e14": {
+    "entry_price": 0.785,
+    "first_seen_ts": 1775076046,
+    "last_seen_ts": 1775076141,
+    "latest_price": 0.795,
+    "market": "Credit One Charleston Open: Madison Keys vs Donna Vekic",
+    "outcome": "Madison Keys",
+    "slug": "wta-keys-vekic-2026-04-01",
+    "snapshot_clv": 0.01,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"

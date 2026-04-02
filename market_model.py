@@ -18,6 +18,7 @@ MARKET_MODEL_OUTPUT_PATH = os.path.join(DATA_DIR, "market_model_output.json")
 
 MODEL_MIN_MINUTES_TO_START = 0
 MODEL_MAX_MINUTES_TO_START = 180
+MODEL_HISTORY_LOOKBACK_HOURS = 12
 
 
 def load_signal_metrics_history():
@@ -30,6 +31,27 @@ def load_signal_metrics_history():
         pass
     return []
 
+def filter_recent_signal_metrics_rows(rows, lookback_hours=MODEL_HISTORY_LOOKBACK_HOURS):
+    if not isinstance(rows, list):
+        return []
+
+    now_ts = int(datetime.now(timezone.utc).timestamp())
+    cutoff_ts = now_ts - int(lookback_hours * 60 * 60)
+
+    filtered = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_ts = parse_ts(row.get("ts"))
+        if row_ts is None:
+            continue
+
+        if row_ts >= cutoff_ts:
+            filtered.append(row)
+
+    return filtered
 
 def parse_ts(ts_value):
     try:
@@ -545,11 +567,17 @@ if __name__ == "__main__":
         f"MODEL WINDOW: {MODEL_MIN_MINUTES_TO_START} to "
         f"{MODEL_MAX_MINUTES_TO_START} minutes before start"
     )
+    print(f"MODEL HISTORY LOOKBACK HOURS: {MODEL_HISTORY_LOOKBACK_HOURS}")
 
     signal_metrics_history = load_signal_metrics_history()
+    recent_signal_metrics_history = filter_recent_signal_metrics_rows(
+        signal_metrics_history,
+        MODEL_HISTORY_LOOKBACK_HOURS,
+    )
 
     print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
+    print(f"Recent signal metrics rows: {len(recent_signal_metrics_history)}")
 
-    recommendations = build_recommendations(signal_metrics_history)
+    recommendations = build_recommendations(recent_signal_metrics_history)
     save_recommendations_json(recommendations)
     print_recommendations(recommendations)
