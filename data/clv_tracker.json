@@ -769,14 +769,14 @@
   "nba-sas-lac-2026-04-02||Clippers||0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c": {
     "entry_price": 0.385,
     "first_seen_ts": 1775137325,
-    "last_seen_ts": 1775137325,
+    "last_seen_ts": 1775141729,
     "latest_price": 0.385,
     "market": "Spurs vs. Clippers",
     "outcome": "Clippers",
     "slug": "nba-sas-lac-2026-04-02",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": false,
+    "snapshot_clv_ready": true,
     "wallet": "0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c"
   },
   "nba-was-lal-2026-03-30-spread-home-15pt5||Lakers||0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0": {
@@ -969,6 +969,19 @@
     "market": "Jets vs. Blackhawks",
     "outcome": "Blackhawks",
     "slug": "nhl-wpg-chi-2026-03-31",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
+  },
+  "nhl-wsh-nj-2026-04-02||Devils||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
+    "entry_price": 0.505,
+    "first_seen_ts": 1775151227,
+    "last_seen_ts": 1775151227,
+    "latest_price": 0.505,
+    "market": "Capitals vs. Devils",
+    "outcome": "Devils",
+    "slug": "nhl-wsh-nj-2026-04-02",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,

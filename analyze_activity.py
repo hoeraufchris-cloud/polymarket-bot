@@ -5,7 +5,12 @@ import urllib.request
 import urllib.parse
 import re
 from collections import defaultdict
-from market_model import build_recommendations, save_recommendations_json
+from market_model import (
+    build_recommendations,
+    save_recommendations_json,
+    filter_recent_signal_metrics_rows,
+    MODEL_HISTORY_LOOKBACK_HOURS,
+)
 
 PUSHOVER_ENABLED = True
 PUSHOVER_USER_KEYS = [
@@ -3283,6 +3288,21 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
     except Exception:
         leaderboard_roi = None
 
+    try:
+        followers = int(get_follower_count(g) or 0)
+    except Exception:
+        followers = 0
+
+    try:
+        consensus_score = int(g.get("consensus_score", 0) or 0)
+    except Exception:
+        consensus_score = 0
+
+    try:
+        score = int(g.get("score", 0) or 0)
+    except Exception:
+        score = 0
+
     soft_fail_reasons = []
 
     if total_notional < BET_ALERT_SOFT_MIN_TOTAL_NOTIONAL:
@@ -3296,11 +3316,6 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
 
     justification_reasons = []
 
-    try:
-        score = int(g.get("score", 0) or 0)
-    except Exception:
-        score = 0
-
     if score >= BET_ALERT_SOFT_STRONG_SCORE:
         justification_reasons.append("strong_score")
 
@@ -3313,18 +3328,8 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
     if leaderboard_roi is not None and leaderboard_roi >= BET_ALERT_SOFT_STRONG_LEADERBOARD_ROI:
         justification_reasons.append("strong_roi")
 
-    try:
-        followers = int(get_follower_count(g) or 0)
-    except Exception:
-        followers = 0
-
     if followers >= BET_ALERT_SOFT_STRONG_FOLLOWERS:
         justification_reasons.append("followers")
-
-    try:
-        consensus_score = int(g.get("consensus_score", 0) or 0)
-    except Exception:
-        consensus_score = 0
 
     if consensus_score >= BET_ALERT_SOFT_STRONG_CONSENSUS_SCORE:
         justification_reasons.append("consensus")
@@ -3346,6 +3351,32 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
         and 0 <= int(minutes_to_start) <= BET_ALERT_SOFT_STRONG_MAX_MINUTES_TO_START
     ):
         justification_reasons.append("close_to_start")
+
+    # --- hard stop for weak low-conviction signals ---
+    if size_ratio < 1.25 and followers == 0 and consensus_score == 0:
+        return False, {
+            "soft_fail_count": 999,
+            "justification_count": len(justification_reasons),
+            "soft_fail_reasons": ["low_ratio_no_confirmation"],
+            "justification_reasons": justification_reasons,
+        }
+
+    # --- hard stop for low-ROI signals unless they have real support ---
+    if leaderboard_roi is not None and leaderboard_roi < 0.01:
+        low_roi_override = (
+            followers >= 1
+            or consensus_score >= 50
+            or size_ratio >= 3.0
+            or total_notional >= 10000
+        )
+
+        if not low_roi_override:
+            return False, {
+                "soft_fail_count": 999,
+                "justification_count": len(justification_reasons),
+                "soft_fail_reasons": ["low_roi_no_override"],
+                "justification_reasons": justification_reasons,
+            }
 
     soft_fail_count = len(soft_fail_reasons)
     justification_count = len(justification_reasons)
@@ -5377,12 +5408,18 @@ if __name__ == "__main__":
             save_alerted_bets(alerted_bets)
             save_signal_metrics_history(signal_metrics_history)
 
-            market_model_recommendations = build_recommendations(signal_metrics_history)
+            recent_model_signal_metrics = filter_recent_signal_metrics_rows(
+                signal_metrics_history,
+                MODEL_HISTORY_LOOKBACK_HOURS,
+            )
+            market_model_recommendations = build_recommendations(recent_model_signal_metrics)
             save_recommendations_json(market_model_recommendations)
 
             print("-" * 80)
             print("MARKET MODEL SUMMARY")
             print("=" * 80)
+            print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
+            print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
             print(f"Saved market model recommendations: {len(market_model_recommendations)}")
 
             top_model_bets = [

@@ -18,5 +18,25 @@
     "title": "Spurs vs. Clippers",
     "total_size": 112711.16816,
     "wallet": "0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c"
+  },
+  "nhl-wsh-nj-2026-04-02||Devils": {
+    "buy_count": 36,
+    "consensus_score": 0,
+    "consensus_type": null,
+    "current_price": 0.505,
+    "edge_pct": 0.97,
+    "followers": 0,
+    "game_conflict_key": "capitals vs. devils",
+    "label": "BET",
+    "last_alert_ts": 1775151227,
+    "market": "",
+    "normalized_outcome_key": "devils",
+    "outcome": "Devils",
+    "score": 111,
+    "slug": "nhl-wsh-nj-2026-04-02",
+    "stake_pct": 100,
+    "title": "Capitals vs. Devils",
+    "total_size": 115946.607137,
+    "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
   }
 }
