@@ -1,4 +1,6 @@
 import json
+from datetime import datetime, timezone
+import time
 import os
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -18,8 +20,32 @@ MARKET_MODEL_OUTPUT_PATH = os.path.join(DATA_DIR, "market_model_output.json")
 
 MODEL_MIN_MINUTES_TO_START = 0
 MODEL_MAX_MINUTES_TO_START = 180
-MODEL_HISTORY_LOOKBACK_HOURS = 12
+MODEL_HISTORY_LOOKBACK_HOURS = 48
 
+def filter_recent_rows(rows):
+    if not isinstance(rows, list):
+        return []
+
+    now_ts = int(time.time())
+    cutoff_ts = now_ts - (MODEL_HISTORY_LOOKBACK_HOURS * 3600)
+
+    recent_rows = []
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        ts = row.get("ts")
+
+        try:
+            ts = int(ts)
+        except Exception:
+            continue
+
+        if ts >= cutoff_ts:
+            recent_rows.append(row)
+
+    return recent_rows
 
 def load_signal_metrics_history():
     try:
@@ -421,6 +447,8 @@ def classify_signal_stage(snapshot, model_output):
     minutes_to_start = parse_int(snapshot.get("minutes_to_start"), -999999)
     model_score = parse_int(model_output.get("model_score"), 0)
 
+    discard_reason = "unclassified_discard"
+
     if (
         unique_wallet_count >= 2
         or max_followers >= 1
@@ -428,54 +456,191 @@ def classify_signal_stage(snapshot, model_output):
     ):
         if model_score >= 30 and 0 <= minutes_to_start <= MODEL_MAX_MINUTES_TO_START:
             return "confirmed"
+        if model_score < 30:
+            discard_reason = "confirmed_candidate_score_too_low"
+        elif minutes_to_start < 0:
+            discard_reason = "confirmed_candidate_started"
+        elif minutes_to_start > MODEL_MAX_MINUTES_TO_START:
+            discard_reason = "confirmed_candidate_too_early"
+        snapshot["discard_reason"] = discard_reason
+        return "discard"
 
-    if (
-        unique_wallet_count == 1
-        and total_notional >= 5000
-        and max_size_ratio >= 3
-        and model_score >= 30
-        and 60 < minutes_to_start <= MODEL_MAX_MINUTES_TO_START
-    ):
-        return "early_watch"
+    if unique_wallet_count == 1:
+        if max_size_ratio < 2:
+            discard_reason = "single_wallet_size_ratio_too_low"
+        elif max_size_ratio < 3:
+            if model_score >= 30 and minutes_to_start > 60 and minutes_to_start <= MODEL_MAX_MINUTES_TO_START and total_notional >= 5000:
+                return "early_watch_shadow_size_ratio"
+            discard_reason = "single_wallet_size_ratio_mid_range"
+        elif model_score < 30:
+            discard_reason = "single_wallet_score_too_low"
+        elif minutes_to_start <= 60:
+            discard_reason = "single_wallet_too_close_to_start"
+        elif minutes_to_start > MODEL_MAX_MINUTES_TO_START:
+            discard_reason = "single_wallet_too_early"
+        elif total_notional >= 5000:
+            return "early_watch"
+        elif total_notional >= 2000:
+            return "early_watch_shadow"
+        else:
+            discard_reason = "single_wallet_notional_too_low"
 
+        snapshot["discard_reason"] = discard_reason
+        return "discard"
+
+    snapshot["discard_reason"] = discard_reason
     return "discard"
+
+def build_early_watch_diagnostics_from_snapshots(snapshot_rows):
+    diagnostics = {
+        "total_snapshots": 0,
+        "in_window_snapshots": 0,
+        "single_wallet_snapshots": 0,
+        "single_wallet_high_size_ratio": 0,
+        "single_wallet_high_notional": 0,
+        "single_wallet_strong": 0,
+        "multi_wallet_snapshots": 0,
+        "multi_wallet_high_size_ratio": 0,
+        "multi_wallet_high_notional": 0,
+        "multi_wallet_strong": 0,
+        "classified_early_watch": 0,
+        "classified_confirmed": 0,
+        "classified_discard": 0,
+    }
+
+    if not isinstance(snapshot_rows, list):
+        return diagnostics
+
+    for row in snapshot_rows:
+        if not isinstance(row, dict):
+            continue
+
+        diagnostics["total_snapshots"] += 1
+
+        minutes_to_start = row.get("minutes_to_start")
+        if not is_in_model_window(minutes_to_start):
+            continue
+
+        diagnostics["in_window_snapshots"] += 1
+
+        unique_wallet_count = parse_int(row.get("unique_wallet_count"), 0)
+        total_notional = parse_float(row.get("total_notional"), 0.0)
+        max_size_ratio = parse_float(row.get("max_size_ratio"), 0.0)
+        signal_stage = str(row.get("signal_stage", "") or "").strip().lower()
+
+        if unique_wallet_count == 1:
+            diagnostics["single_wallet_snapshots"] += 1
+
+            if max_size_ratio >= 3:
+                diagnostics["single_wallet_high_size_ratio"] += 1
+
+            if total_notional >= 5000:
+                diagnostics["single_wallet_high_notional"] += 1
+
+            if max_size_ratio >= 3 and total_notional >= 5000:
+                diagnostics["single_wallet_strong"] += 1
+
+        elif unique_wallet_count >= 2:
+            diagnostics["multi_wallet_snapshots"] += 1
+
+            if max_size_ratio >= 3:
+                diagnostics["multi_wallet_high_size_ratio"] += 1
+
+            if total_notional >= 5000:
+                diagnostics["multi_wallet_high_notional"] += 1
+
+            if max_size_ratio >= 3 and total_notional >= 5000:
+                diagnostics["multi_wallet_strong"] += 1
+
+        if signal_stage == "early_watch":
+            diagnostics["classified_early_watch"] += 1
+        elif signal_stage == "confirmed":
+            diagnostics["classified_confirmed"] += 1
+        else:
+            diagnostics["classified_discard"] += 1
+
+    return diagnostics
 
 def build_recommendations(rows):
     grouped = group_rows_by_market_outcome(rows)
     recommendations = []
+    diagnostics_input_rows = []
+
+    debug_counts = {
+        "grouped_markets": len(grouped),
+        "snapshot_built": 0,
+        "skipped_no_snapshot": 0,
+        "skipped_bad_minutes": 0,
+        "skipped_below_window": 0,
+        "skipped_above_window": 0,
+        "skipped_no_model_output": 0,
+        "classified_early_watch": 0,
+        "classified_early_watch_shadow": 0,
+        "classified_early_watch_shadow_size_ratio": 0,
+        "classified_confirmed": 0,
+        "classified_discard": 0,
+        "discard_reason_counts": {},
+    }
 
     for _, market_rows in grouped.items():
         snapshot = build_market_snapshot(market_rows)
         if not snapshot:
+            debug_counts["skipped_no_snapshot"] += 1
             continue
 
-        raw_minutes = snapshot.get("minutes_to_start")
+        debug_counts["snapshot_built"] += 1
 
+        raw_minutes = snapshot.get("minutes_to_start")
         try:
             minutes_to_start = int(raw_minutes)
         except Exception:
+            debug_counts["skipped_bad_minutes"] += 1
             continue
 
         if minutes_to_start < MODEL_MIN_MINUTES_TO_START:
+            debug_counts["skipped_below_window"] += 1
             continue
-
         if minutes_to_start > MODEL_MAX_MINUTES_TO_START:
+            debug_counts["skipped_above_window"] += 1
             continue
 
         snapshot["minutes_to_start"] = minutes_to_start
-
         model_output = score_market_snapshot(snapshot)
         if not model_output:
+            debug_counts["skipped_no_model_output"] += 1
             continue
 
         signal_stage = classify_signal_stage(snapshot, model_output)
+
+        diagnostic_row = dict(snapshot)
+        diagnostic_row.update(model_output)
+        diagnostic_row["signal_stage"] = signal_stage
+        diagnostics_input_rows.append(diagnostic_row)
+
+        if signal_stage == "early_watch":
+            debug_counts["classified_early_watch"] += 1
+        elif signal_stage == "early_watch_shadow":
+            debug_counts["classified_early_watch_shadow"] += 1
+        elif signal_stage == "early_watch_shadow_size_ratio":
+            debug_counts["classified_early_watch_shadow_size_ratio"] += 1
+        elif signal_stage == "confirmed":
+            debug_counts["classified_confirmed"] += 1
+        else:
+            debug_counts["classified_discard"] += 1
+            discard_reason = str(snapshot.get("discard_reason", "unknown_discard") or "unknown_discard")
+            debug_counts["discard_reason_counts"][discard_reason] = (
+                debug_counts["discard_reason_counts"].get(discard_reason, 0) + 1
+            )
+
         if signal_stage == "discard":
             continue
 
         row = dict(snapshot)
         row.update(model_output)
         row["signal_stage"] = signal_stage
-        recommendations.append(row)
+
+        if signal_stage in {"early_watch", "confirmed"}:
+            recommendations.append(row)
 
     recommendations.sort(
         key=lambda x: (
@@ -486,13 +651,17 @@ def build_recommendations(rows):
         reverse=True,
     )
 
+    build_recommendations.last_early_watch_diagnostics = (
+        build_early_watch_diagnostics_from_snapshots(diagnostics_input_rows)
+    )
+    build_recommendations.last_debug_counts = debug_counts
+
     return recommendations
 
 
 def save_recommendations_json(recommendations):
     early_watch_count = 0
     confirmed_count = 0
-
     for row in recommendations:
         stage = str(row.get("signal_stage", "") or "").strip().lower()
         if stage == "early_watch":
@@ -500,14 +669,20 @@ def save_recommendations_json(recommendations):
         elif stage == "confirmed":
             confirmed_count += 1
 
+    early_watch_diagnostics = getattr(
+        build_recommendations,
+        "last_early_watch_diagnostics",
+        {},
+    )
+
     payload = {
         "generated_at_utc": datetime.now(timezone.utc).isoformat(),
         "recommendation_count": len(recommendations),
         "early_watch_count": early_watch_count,
         "confirmed_count": confirmed_count,
+        "early_watch_diagnostics": early_watch_diagnostics,
         "recommendations": recommendations,
     }
-
     try:
         with open(MARKET_MODEL_OUTPUT_PATH, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
@@ -578,6 +753,33 @@ if __name__ == "__main__":
     print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
     print(f"Recent signal metrics rows: {len(recent_signal_metrics_history)}")
 
-    recommendations = build_recommendations(recent_signal_metrics_history)
-    save_recommendations_json(recommendations)
-    print_recommendations(recommendations)
+signal_metrics_history = load_signal_metrics_history()
+recent_signal_metrics_history = filter_recent_rows(signal_metrics_history)
+
+recommendations = build_recommendations(recent_signal_metrics_history)
+save_recommendations_json(recommendations)
+
+early_watch_diagnostics = getattr(
+    build_recommendations,
+    "last_early_watch_diagnostics",
+    {},
+)
+
+print("=" * 80)
+print("EARLY WATCH DIAGNOSTICS - MARKET SNAPSHOT LAYER")
+print("=" * 80)
+print(f"Total snapshots: {early_watch_diagnostics.get('total_snapshots', 0)}")
+print(f"In-window snapshots: {early_watch_diagnostics.get('in_window_snapshots', 0)}")
+print(f"Single-wallet snapshots: {early_watch_diagnostics.get('single_wallet_snapshots', 0)}")
+print(f"Single-wallet high size ratio: {early_watch_diagnostics.get('single_wallet_high_size_ratio', 0)}")
+print(f"Single-wallet high notional: {early_watch_diagnostics.get('single_wallet_high_notional', 0)}")
+print(f"Single-wallet strong: {early_watch_diagnostics.get('single_wallet_strong', 0)}")
+print(f"Multi-wallet snapshots: {early_watch_diagnostics.get('multi_wallet_snapshots', 0)}")
+print(f"Multi-wallet high size ratio: {early_watch_diagnostics.get('multi_wallet_high_size_ratio', 0)}")
+print(f"Multi-wallet high notional: {early_watch_diagnostics.get('multi_wallet_high_notional', 0)}")
+print(f"Multi-wallet strong: {early_watch_diagnostics.get('multi_wallet_strong', 0)}")
+print(f"Classified early_watch: {early_watch_diagnostics.get('classified_early_watch', 0)}")
+print(f"Classified confirmed: {early_watch_diagnostics.get('classified_confirmed', 0)}")
+print(f"Classified discard: {early_watch_diagnostics.get('classified_discard', 0)}")
+
+print_recommendations(recommendations)

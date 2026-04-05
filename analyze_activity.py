@@ -21,7 +21,7 @@ PUSHOVER_API_TOKEN = "agxdaaoicjeeba5pku3znj4i5eahtz"
 PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
-HOURS_LOOKBACK = 12
+HOURS_LOOKBACK = 48
 POLL_SECONDS = 60   
 
 LEADERBOARD_WALLET_LIMIT = 50
@@ -56,6 +56,7 @@ CLV_TRACKER_PATH = f"{DATA_DIR}/clv_tracker.json"
 TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
 ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
+SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
 BET_ALERT_MIN_NEW_SHARP_STAKE = 1000
@@ -2454,6 +2455,357 @@ def save_signal_metrics_history(signal_metrics_history):
     except Exception as e:
         print(f"[Signal metrics history save error] {repr(e)}")
 
+
+def make_signal_metrics_cycle_key(g):
+    if not isinstance(g, dict):
+        return None
+
+    slug = str(g.get("slug", "") or "").strip()
+    outcome = str(g.get("outcome", "") or "").strip()
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+
+    if not slug or not outcome or not wallet:
+        return None
+
+    return f"{slug}||{outcome}||{wallet}"
+
+
+def load_signal_stage_tracker():
+    try:
+        with open(SIGNAL_STAGE_TRACKER_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_signal_stage_tracker(signal_stage_tracker):
+    try:
+        os.makedirs(os.path.dirname(SIGNAL_STAGE_TRACKER_PATH), exist_ok=True)
+        with open(SIGNAL_STAGE_TRACKER_PATH, "w", encoding="utf-8") as f:
+            json.dump(signal_stage_tracker, f, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"[Signal stage tracker save error] {repr(e)}")
+
+
+def build_market_outcome_performance_summary(tracked_bets, clv_tracker):
+    summary = defaultdict(lambda: {
+        "tracked_alert_count": 0,
+        "resolved_alert_count": 0,
+        "win_count": 0,
+        "loss_count": 0,
+        "win_rate_pct": None,
+        "avg_edge_pct_at_alert": None,
+        "avg_instant_clv_cents_at_alert": None,
+        "clv_tracked_count": 0,
+        "clv_ready_count": 0,
+        "clv_positive_count": 0,
+        "positive_snapshot_clv_rate": None,
+        "avg_snapshot_clv_cents": None,
+        "last_alert_ts": None,
+        "last_resolved_ts": None,
+    })
+
+    if isinstance(tracked_bets, dict):
+        for _, row in tracked_bets.items():
+            if not isinstance(row, dict):
+                continue
+
+            slug = str(row.get("slug", "") or "").strip()
+            outcome = str(row.get("outcome", "") or "").strip()
+            if not slug or not outcome:
+                continue
+
+            market_key = f"{slug}||{outcome}"
+            bucket = summary[market_key]
+
+            bucket["tracked_alert_count"] += 1
+
+            alert_ts = row.get("alert_ts")
+            try:
+                alert_ts = int(alert_ts)
+                if bucket["last_alert_ts"] is None or alert_ts > bucket["last_alert_ts"]:
+                    bucket["last_alert_ts"] = alert_ts
+            except Exception:
+                pass
+
+            try:
+                edge_pct_at_alert = float(row.get("edge_pct_at_alert", 0) or 0)
+            except Exception:
+                edge_pct_at_alert = 0.0
+
+            try:
+                instant_clv_cents_at_alert = float(row.get("instant_clv_cents_at_alert", 0) or 0)
+            except Exception:
+                instant_clv_cents_at_alert = 0.0
+
+            tracked_n = bucket["tracked_alert_count"]
+            if tracked_n == 1:
+                bucket["avg_edge_pct_at_alert"] = round(edge_pct_at_alert, 4)
+                bucket["avg_instant_clv_cents_at_alert"] = round(instant_clv_cents_at_alert, 4)
+            else:
+                old_edge_avg = float(bucket.get("avg_edge_pct_at_alert", 0.0) or 0.0)
+                old_instant_avg = float(bucket.get("avg_instant_clv_cents_at_alert", 0.0) or 0.0)
+
+                bucket["avg_edge_pct_at_alert"] = round(
+                    ((old_edge_avg * (tracked_n - 1)) + edge_pct_at_alert) / tracked_n,
+                    4,
+                )
+                bucket["avg_instant_clv_cents_at_alert"] = round(
+                    ((old_instant_avg * (tracked_n - 1)) + instant_clv_cents_at_alert) / tracked_n,
+                    4,
+                )
+
+            if row.get("resolved"):
+                bucket["resolved_alert_count"] += 1
+
+                resolved_ts = row.get("resolved_ts")
+                try:
+                    resolved_ts = int(resolved_ts)
+                    if bucket["last_resolved_ts"] is None or resolved_ts > bucket["last_resolved_ts"]:
+                        bucket["last_resolved_ts"] = resolved_ts
+                except Exception:
+                    pass
+
+                result = str(row.get("result", "") or "").strip().upper()
+                if result == "WIN":
+                    bucket["win_count"] += 1
+                elif result == "LOSS":
+                    bucket["loss_count"] += 1
+
+    if isinstance(clv_tracker, dict):
+        for _, row in clv_tracker.items():
+            if not isinstance(row, dict):
+                continue
+
+            slug = str(row.get("slug", "") or "").strip()
+            outcome = str(row.get("outcome", "") or "").strip()
+            if not slug or not outcome:
+                continue
+
+            market_key = f"{slug}||{outcome}"
+            bucket = summary[market_key]
+
+            bucket["clv_tracked_count"] += 1
+
+            snapshot_clv_ready = bool(row.get("snapshot_clv_ready", False))
+            snapshot_clv_positive = bool(row.get("snapshot_clv_positive", False))
+
+            if snapshot_clv_ready:
+                bucket["clv_ready_count"] += 1
+                if snapshot_clv_positive:
+                    bucket["clv_positive_count"] += 1
+
+                try:
+                    snapshot_clv_cents = round(float(row.get("snapshot_clv", 0) or 0) * 100, 4)
+                except Exception:
+                    snapshot_clv_cents = 0.0
+
+                ready_n = bucket["clv_ready_count"]
+                if ready_n == 1:
+                    bucket["avg_snapshot_clv_cents"] = round(snapshot_clv_cents, 4)
+                else:
+                    old_snapshot_avg = float(bucket.get("avg_snapshot_clv_cents", 0.0) or 0.0)
+                    bucket["avg_snapshot_clv_cents"] = round(
+                        ((old_snapshot_avg * (ready_n - 1)) + snapshot_clv_cents) / ready_n,
+                        4,
+                    )
+
+    for market_key, bucket in summary.items():
+        resolved_alert_count = int(bucket.get("resolved_alert_count", 0) or 0)
+        win_count = int(bucket.get("win_count", 0) or 0)
+        clv_ready_count = int(bucket.get("clv_ready_count", 0) or 0)
+        clv_positive_count = int(bucket.get("clv_positive_count", 0) or 0)
+
+        if resolved_alert_count > 0:
+            bucket["win_rate_pct"] = round((win_count / resolved_alert_count) * 100, 2)
+
+        if clv_ready_count > 0:
+            bucket["positive_snapshot_clv_rate"] = round(
+                (clv_positive_count / clv_ready_count) * 100,
+                2,
+            )
+
+    return dict(summary)
+
+
+def update_signal_stage_tracker(signal_stage_tracker, market_model_recommendations, tracked_bets, clv_tracker, now_ts):
+    if not isinstance(signal_stage_tracker, dict):
+        signal_stage_tracker = {}
+
+    performance_summary = build_market_outcome_performance_summary(tracked_bets, clv_tracker)
+
+    active_market_keys = set()
+    newly_seen_early_watch = 0
+    newly_seen_confirmed = 0
+    newly_transitioned = 0
+
+    for rec in market_model_recommendations:
+        if not isinstance(rec, dict):
+            continue
+
+        slug = str(rec.get("slug", "") or "").strip()
+        outcome = str(rec.get("outcome", "") or "").strip()
+        if not slug or not outcome:
+            continue
+
+        market_key = f"{slug}||{outcome}"
+        active_market_keys.add(market_key)
+
+        signal_stage = str(rec.get("signal_stage", "") or "").strip().lower()
+        if signal_stage not in {"early_watch", "confirmed"}:
+            continue
+
+        row = signal_stage_tracker.get(market_key)
+        if not isinstance(row, dict):
+            row = {
+                "market_key": market_key,
+                "slug": slug,
+                "outcome": outcome,
+                "market": str(rec.get("market", "") or "").strip(),
+                "first_seen_ts": None,
+                "last_seen_ts": None,
+                "currently_active": True,
+                "first_stage": None,
+                "current_stage": None,
+                "first_early_watch_ts": None,
+                "first_confirmed_ts": None,
+                "transitioned_early_watch_to_confirmed": False,
+                "transition_seconds": None,
+                "minutes_to_start_at_first_early_watch": None,
+                "minutes_to_start_at_first_confirmed": None,
+                "time_to_start_bucket_at_first_early_watch": None,
+                "time_to_start_bucket_at_first_confirmed": None,
+                "model_score_at_first_early_watch": None,
+                "model_score_at_first_confirmed": None,
+                "latest_model_score": None,
+                "latest_recommendation": None,
+                "latest_minutes_to_start": None,
+                "latest_time_to_start_bucket": None,
+                "latest_total_notional": None,
+                "latest_unique_wallet_count": None,
+                "latest_max_size_ratio": None,
+                "latest_max_followers": None,
+                "latest_max_consensus_score": None,
+                "stage_history": [],
+                "tracked_alert_count": 0,
+                "resolved_alert_count": 0,
+                "win_count": 0,
+                "loss_count": 0,
+                "win_rate_pct": None,
+                "avg_edge_pct_at_alert": None,
+                "avg_instant_clv_cents_at_alert": None,
+                "clv_tracked_count": 0,
+                "clv_ready_count": 0,
+                "clv_positive_count": 0,
+                "positive_snapshot_clv_rate": None,
+                "avg_snapshot_clv_cents": None,
+                "last_alert_ts": None,
+                "last_resolved_ts": None,
+            }
+
+        row["market"] = str(rec.get("market", "") or row.get("market", "") or "").strip()
+
+        if row["first_seen_ts"] is None:
+            row["first_seen_ts"] = int(now_ts)
+            row["first_stage"] = signal_stage
+
+        row["last_seen_ts"] = int(now_ts)
+        row["currently_active"] = True
+        row["current_stage"] = signal_stage
+        row["latest_model_score"] = rec.get("model_score")
+        row["latest_recommendation"] = rec.get("recommendation")
+        row["latest_minutes_to_start"] = rec.get("minutes_to_start")
+        row["latest_time_to_start_bucket"] = rec.get("time_to_start_bucket")
+        row["latest_total_notional"] = rec.get("total_notional")
+        row["latest_unique_wallet_count"] = rec.get("unique_wallet_count")
+        row["latest_max_size_ratio"] = rec.get("max_size_ratio")
+        row["latest_max_followers"] = rec.get("max_followers")
+        row["latest_max_consensus_score"] = rec.get("max_consensus_score")
+
+        stage_history = row.get("stage_history")
+        if not isinstance(stage_history, list):
+            stage_history = []
+
+        should_append_history = False
+        if not stage_history:
+            should_append_history = True
+        else:
+            last_history_stage = str(stage_history[-1].get("signal_stage", "") or "").strip().lower()
+            if last_history_stage != signal_stage:
+                should_append_history = True
+
+        if should_append_history:
+            stage_history.append({
+                "ts": int(now_ts),
+                "signal_stage": signal_stage,
+                "model_score": rec.get("model_score"),
+                "recommendation": rec.get("recommendation"),
+                "minutes_to_start": rec.get("minutes_to_start"),
+                "time_to_start_bucket": rec.get("time_to_start_bucket"),
+                "total_notional": rec.get("total_notional"),
+                "unique_wallet_count": rec.get("unique_wallet_count"),
+                "max_size_ratio": rec.get("max_size_ratio"),
+                "max_followers": rec.get("max_followers"),
+                "max_consensus_score": rec.get("max_consensus_score"),
+            })
+
+        row["stage_history"] = stage_history
+
+        if signal_stage == "early_watch" and row.get("first_early_watch_ts") is None:
+            row["first_early_watch_ts"] = int(now_ts)
+            row["minutes_to_start_at_first_early_watch"] = rec.get("minutes_to_start")
+            row["time_to_start_bucket_at_first_early_watch"] = rec.get("time_to_start_bucket")
+            row["model_score_at_first_early_watch"] = rec.get("model_score")
+            newly_seen_early_watch += 1
+
+        if signal_stage == "confirmed" and row.get("first_confirmed_ts") is None:
+            row["first_confirmed_ts"] = int(now_ts)
+            row["minutes_to_start_at_first_confirmed"] = rec.get("minutes_to_start")
+            row["time_to_start_bucket_at_first_confirmed"] = rec.get("time_to_start_bucket")
+            row["model_score_at_first_confirmed"] = rec.get("model_score")
+            newly_seen_confirmed += 1
+
+            first_early_watch_ts = row.get("first_early_watch_ts")
+            if first_early_watch_ts is not None:
+                row["transitioned_early_watch_to_confirmed"] = True
+                row["transition_seconds"] = int(now_ts) - int(first_early_watch_ts)
+                newly_transitioned += 1
+
+        perf = performance_summary.get(market_key, {})
+        for perf_key, perf_value in perf.items():
+            row[perf_key] = perf_value
+
+        signal_stage_tracker[market_key] = row
+
+    for market_key, row in signal_stage_tracker.items():
+        if not isinstance(row, dict):
+            continue
+        row["currently_active"] = market_key in active_market_keys
+
+    transitioned_total = sum(
+        1
+        for row in signal_stage_tracker.values()
+        if isinstance(row, dict) and row.get("transitioned_early_watch_to_confirmed")
+    )
+
+    active_total = sum(
+        1
+        for row in signal_stage_tracker.values()
+        if isinstance(row, dict) and row.get("currently_active")
+    )
+
+    return signal_stage_tracker, {
+        "tracker_rows": len(signal_stage_tracker),
+        "active_rows": active_total,
+        "newly_seen_early_watch": newly_seen_early_watch,
+        "newly_seen_confirmed": newly_seen_confirmed,
+        "newly_transitioned": newly_transitioned,
+        "transitioned_total": transitioned_total,
+    }
+
 def record_tracked_bet(g, tracked_bets, now_ts):
     if not isinstance(g, dict) or not isinstance(tracked_bets, dict):
         return
@@ -2849,6 +3201,62 @@ def summarize_tracked_bets_by_wallet(tracked_bets):
 
     return summary_rows
 
+def apply_tracked_bet_wallet_scores(wallet_profiles, wallet_result_rows):
+    if not isinstance(wallet_profiles, dict):
+        return wallet_profiles
+    if not isinstance(wallet_result_rows, list):
+        return wallet_profiles
+
+    for row in wallet_result_rows:
+        if not isinstance(row, dict):
+            continue
+
+        wallet = str(row.get("wallet", "") or "").strip().lower()
+        if not wallet or wallet not in wallet_profiles:
+            continue
+
+        resolved = int(row.get("resolved", 0) or 0)
+        win_rate_pct = row.get("win_rate_pct")
+
+        if resolved < 7 or win_rate_pct is None:
+            continue
+
+        try:
+            win_rate_pct = float(win_rate_pct)
+        except Exception:
+            continue
+
+        try:
+            avg_edge_pct_at_alert = float(row.get("avg_edge_pct_at_alert", 0) or 0)
+        except Exception:
+            avg_edge_pct_at_alert = 0.0
+
+        sample_confidence = min(1.0, resolved / 20.0)
+        win_component = (win_rate_pct - 50.0) / 50.0
+        edge_component = avg_edge_pct_at_alert / 5.0
+
+        tracked_bet_score = (
+            (win_component * 0.8) +
+            (edge_component * 0.2)
+        ) * sample_confidence
+
+        tracked_bet_multiplier = 1.0 + max(
+            -0.20,
+            min(0.20, tracked_bet_score * 0.35)
+        )
+
+        profile = wallet_profiles[wallet]
+        base_dynamic_weight = float(profile.get("dynamic_weight", 1.0) or 1.0)
+
+        profile["tracked_bet_resolved"] = resolved
+        profile["tracked_bet_win_rate_pct"] = round(win_rate_pct, 1)
+        profile["tracked_bet_score"] = round(tracked_bet_score, 4)
+        profile["dynamic_weight"] = round(
+            max(0.75, min(1.5, base_dynamic_weight * tracked_bet_multiplier)),
+            4,
+        )
+
+    return wallet_profiles
 
 def record_clv_bet(g, clv_tracker, now_ts):
     if not isinstance(g, dict):
@@ -4410,7 +4818,7 @@ def get_time_to_start_bucket(minutes_to_start):
         return "06-12h"
     return "12h+"
 
-def run_pipeline(wallet_profiles):
+def run_pipeline(wallet_profiles, wallet_result_rows=None):
     global TRACKED_WALLETS
 
     all_trades = []
@@ -4473,6 +4881,10 @@ def run_pipeline(wallet_profiles):
     position_lookup = build_position_lookup(positions)
     fair_price_lookup = build_fair_price_lookup(accumulation_groups)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
+    wallet_profiles = apply_tracked_bet_wallet_scores(
+        wallet_profiles,
+        wallet_result_rows,
+    )
 
     scored_candidates = attach_position_data_and_score(
         real_candidates,
@@ -4505,6 +4917,10 @@ def run_pipeline(wallet_profiles):
     )
 
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
+    wallet_profiles = apply_tracked_bet_wallet_scores(
+        wallet_profiles,
+        wallet_result_rows,
+    )
 
     active_wallets = filter_active_wallets(wallet_profiles)
     gated_wallets = apply_wallet_stability_gating(wallet_profiles, active_wallets)
@@ -4532,6 +4948,281 @@ def run_pipeline(wallet_profiles):
         "active_wallet_count": len(TRACKED_WALLETS),
         "active_wallet_failure_counts": dict(ACTIVE_WALLET_FAILURE_COUNTS),
     }
+
+def build_early_watch_diagnostics(scored_candidates, early_watch_thresholds):
+    diagnostics = {
+        "total_candidates": 0,
+        "lean_bet_candidates": 0,
+
+        "single_wallet_candidates": 0,
+        "single_wallet_high_size_ratio": 0,
+        "single_wallet_high_notional": 0,
+        "single_wallet_strong_candidates": 0,
+
+        "multi_wallet_candidates": 0,
+        "multi_wallet_high_size_ratio": 0,
+        "multi_wallet_high_notional": 0,
+        "multi_wallet_strong_candidates": 0,
+    }
+
+    if not isinstance(scored_candidates, list):
+        return diagnostics
+
+    min_size_ratio = early_watch_thresholds.get("min_size_ratio", 2.0)
+    min_notional = early_watch_thresholds.get("min_total_notional", 5000)
+
+    for g in scored_candidates:
+        if not isinstance(g, dict):
+            continue
+
+        diagnostics["total_candidates"] += 1
+
+        label = str(g.get("label", "") or "").upper()
+        if label not in {"LEAN", "BET"}:
+            continue
+
+        diagnostics["lean_bet_candidates"] += 1
+
+        unique_wallet_count = g.get("unique_wallet_count")
+
+        if unique_wallet_count is None:
+            unique_wallet_count = g.get("wallet_count")
+
+        if unique_wallet_count is None:
+            wallets = g.get("wallets")
+            if isinstance(wallets, list):
+                unique_wallet_count = len(wallets)
+
+        try:
+            unique_wallet_count = int(unique_wallet_count or 0)
+        except Exception:
+            unique_wallet_count = 0
+        total_notional = float(g.get("total_notional", 0) or 0)
+        size_ratio = float(g.get("max_size_ratio", 0) or 0)
+
+        if unique_wallet_count == 1:
+            diagnostics["single_wallet_candidates"] += 1
+
+            if size_ratio >= min_size_ratio:
+                diagnostics["single_wallet_high_size_ratio"] += 1
+
+            if total_notional >= min_notional:
+                diagnostics["single_wallet_high_notional"] += 1
+
+            if size_ratio >= min_size_ratio and total_notional >= min_notional:
+                diagnostics["single_wallet_strong_candidates"] += 1
+
+        elif unique_wallet_count >= 2:
+            diagnostics["multi_wallet_candidates"] += 1
+
+            if size_ratio >= min_size_ratio:
+                diagnostics["multi_wallet_high_size_ratio"] += 1
+
+            if total_notional >= min_notional:
+                diagnostics["multi_wallet_high_notional"] += 1
+
+            if size_ratio >= min_size_ratio and total_notional >= min_notional:
+                diagnostics["multi_wallet_strong_candidates"] += 1
+
+    return diagnostics
+
+def print_stage_edge_analysis(signal_stage_tracker):
+    print("=" * 80)
+    print("STAGE EDGE ANALYSIS - ALL TIME")
+    print("=" * 80)
+
+    buckets = {
+        "early_watch_only": [],
+        "transitioned": [],
+        "confirmed_only": [],
+    }
+
+    for row in signal_stage_tracker.values():
+        if not isinstance(row, dict):
+            continue
+
+        first_early = row.get("first_early_watch_ts")
+        first_confirmed = row.get("first_confirmed_ts")
+        transitioned = row.get("transitioned_early_watch_to_confirmed", False)
+
+        if transitioned:
+            buckets["transitioned"].append(row)
+        elif first_early and not first_confirmed:
+            buckets["early_watch_only"].append(row)
+        elif first_confirmed and not first_early:
+            buckets["confirmed_only"].append(row)
+
+    def analyze(bucket_rows):
+        resolved = 0
+        wins = 0
+        clv_ready = 0
+        clv_positive = 0
+        total_clv = 0.0
+
+        for r in bucket_rows:
+            if r.get("resolved_alert_count", 0) > 0:
+                resolved += r.get("resolved_alert_count", 0)
+                wins += r.get("win_count", 0)
+
+            clv_ready += r.get("clv_ready_count", 0)
+            clv_positive += r.get("clv_positive_count", 0)
+
+            avg_clv = r.get("avg_snapshot_clv_cents")
+            if avg_clv is not None:
+                total_clv += avg_clv * max(r.get("clv_ready_count", 0), 1)
+
+        win_rate = (wins / resolved * 100) if resolved > 0 else None
+        clv_rate = (clv_positive / clv_ready * 100) if clv_ready > 0 else None
+        avg_clv = (total_clv / clv_ready) if clv_ready > 0 else None
+
+        return {
+            "rows": len(bucket_rows),
+            "resolved": resolved,
+            "win_rate": win_rate,
+            "clv_rate": clv_rate,
+            "avg_clv": avg_clv,
+        }
+
+    for name, rows in buckets.items():
+        result = analyze(rows)
+
+        print("-" * 80)
+        print(name.upper())
+        print(f"Rows: {result['rows']}")
+        print(f"Resolved bets: {result['resolved']}")
+        print(f"Win rate: {result['win_rate']}")
+        print(f"CLV positive rate: {result['clv_rate']}")
+        print(f"Avg CLV (cents): {result['avg_clv']}")
+
+def summarize_signal_stage_tracker(signal_stage_tracker):
+    def empty_bucket():
+        return {
+            "row_count": 0,
+            "active_count": 0,
+            "tracked_alert_count": 0,
+            "resolved_alert_count": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "win_rate_pct": None,
+            "clv_tracked_count": 0,
+            "clv_ready_count": 0,
+            "clv_positive_count": 0,
+            "positive_snapshot_clv_rate": None,
+            "avg_snapshot_clv_cents": None,
+            "transition_count": 0,
+            "avg_transition_minutes": None,
+        }
+
+    summary = {
+        "early_watch_only": empty_bucket(),
+        "transitioned": empty_bucket(),
+        "confirmed_only": empty_bucket(),
+        "total_rows": 0,
+    }
+
+    snapshot_clv_sums = {
+        "early_watch_only": 0.0,
+        "transitioned": 0.0,
+        "confirmed_only": 0.0,
+    }
+    transition_minutes_sums = {
+        "early_watch_only": 0.0,
+        "transitioned": 0.0,
+        "confirmed_only": 0.0,
+    }
+
+    if not isinstance(signal_stage_tracker, dict):
+        return summary
+
+    for _, row in signal_stage_tracker.items():
+        if not isinstance(row, dict):
+            continue
+
+        summary["total_rows"] += 1
+
+        first_early_watch_ts = row.get("first_early_watch_ts")
+        first_confirmed_ts = row.get("first_confirmed_ts")
+        transitioned = bool(row.get("transitioned_early_watch_to_confirmed", False))
+        first_stage = str(row.get("first_stage", "") or "").strip().lower()
+
+        bucket_name = None
+
+        if transitioned:
+            bucket_name = "transitioned"
+        elif first_early_watch_ts is not None and first_confirmed_ts is None:
+            bucket_name = "early_watch_only"
+        elif first_stage == "confirmed" and first_confirmed_ts is not None and first_early_watch_ts is None:
+            bucket_name = "confirmed_only"
+        else:
+            continue
+
+        bucket = summary[bucket_name]
+        bucket["row_count"] += 1
+
+        if bool(row.get("currently_active", False)):
+            bucket["active_count"] += 1
+
+        tracked_alert_count = int(row.get("tracked_alert_count", 0) or 0)
+        resolved_alert_count = int(row.get("resolved_alert_count", 0) or 0)
+        win_count = int(row.get("win_count", 0) or 0)
+        loss_count = int(row.get("loss_count", 0) or 0)
+        clv_tracked_count = int(row.get("clv_tracked_count", 0) or 0)
+        clv_ready_count = int(row.get("clv_ready_count", 0) or 0)
+        clv_positive_count = int(row.get("clv_positive_count", 0) or 0)
+
+        bucket["tracked_alert_count"] += tracked_alert_count
+        bucket["resolved_alert_count"] += resolved_alert_count
+        bucket["win_count"] += win_count
+        bucket["loss_count"] += loss_count
+        bucket["clv_tracked_count"] += clv_tracked_count
+        bucket["clv_ready_count"] += clv_ready_count
+        bucket["clv_positive_count"] += clv_positive_count
+
+        avg_snapshot_clv_cents = row.get("avg_snapshot_clv_cents")
+        try:
+            if avg_snapshot_clv_cents is not None and clv_ready_count > 0:
+                snapshot_clv_sums[bucket_name] += float(avg_snapshot_clv_cents) * clv_ready_count
+        except Exception:
+            pass
+
+        transition_seconds = row.get("transition_seconds")
+        try:
+            if transition_seconds is not None and transitioned:
+                bucket["transition_count"] += 1
+                transition_minutes_sums[bucket_name] += float(transition_seconds) / 60.0
+        except Exception:
+            pass
+
+    for bucket_name in ["early_watch_only", "transitioned", "confirmed_only"]:
+        bucket = summary[bucket_name]
+
+        resolved_alert_count = int(bucket.get("resolved_alert_count", 0) or 0)
+        win_count = int(bucket.get("win_count", 0) or 0)
+        clv_ready_count = int(bucket.get("clv_ready_count", 0) or 0)
+        clv_positive_count = int(bucket.get("clv_positive_count", 0) or 0)
+        transition_count = int(bucket.get("transition_count", 0) or 0)
+
+        if resolved_alert_count > 0:
+            bucket["win_rate_pct"] = round((win_count / resolved_alert_count) * 100, 2)
+
+        if clv_ready_count > 0:
+            bucket["positive_snapshot_clv_rate"] = round(
+                (clv_positive_count / clv_ready_count) * 100,
+                2,
+            )
+            bucket["avg_snapshot_clv_cents"] = round(
+                snapshot_clv_sums[bucket_name] / clv_ready_count,
+                4,
+            )
+
+        if transition_count > 0:
+            bucket["avg_transition_minutes"] = round(
+                transition_minutes_sums[bucket_name] / transition_count,
+                2,
+            )
+
+    return summary
+
 
 def price_to_american_odds(price):
     try:
@@ -5116,16 +5807,19 @@ if __name__ == "__main__":
     clv_tracker = load_clv_tracker()
     tracked_bets = load_tracked_bets()
     signal_metrics_history = load_signal_metrics_history()
+    signal_stage_tracker = load_signal_stage_tracker()
     print(f"BASE_DIR: {BASE_DIR}")
     print(f"DATA_DIR in use: {DATA_DIR}")
     print(f"ALERTED_BETS_PATH: {ALERTED_BETS_PATH}")
     print(f"CLV_TRACKER_PATH: {CLV_TRACKER_PATH}")
     print(f"TRACKED_BETS_PATH: {TRACKED_BETS_PATH}")
     print(f"SIGNAL_METRICS_HISTORY_PATH: {SIGNAL_METRICS_HISTORY_PATH}")
+    print(f"SIGNAL_STAGE_TRACKER_PATH: {SIGNAL_STAGE_TRACKER_PATH}")
     print(f"Loaded alerted bets: {len(alerted_bets)}")
     print(f"Loaded CLV tracker rows: {len(clv_tracker)}")
     print(f"Loaded tracked bets: {len(tracked_bets)}")
     print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
+    print(f"Loaded signal stage tracker rows: {len(signal_stage_tracker)}")
     wallet_profiles = init_wallet_profiles(TRACKED_WALLETS)
     enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows)
 
@@ -5152,7 +5846,12 @@ if __name__ == "__main__":
         rejected_candidates = []
 
         try:
-            result = run_pipeline(wallet_profiles)
+            wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
+
+            result = run_pipeline(
+                wallet_profiles,
+                wallet_result_rows=wallet_result_rows,
+            )
             wallet_profiles = result["wallet_profiles"]
 
             print("=" * 80)
@@ -5191,70 +5890,79 @@ if __name__ == "__main__":
                 print(f"CLV observations:    {profile['clv_observations']}")
                 print(f"Avg forward CLV:     {profile['avg_forward_clv']}")
                 print(f"Positive CLV rate:   {profile['positive_clv_rate']}")
-                print(f"Leader count:        {profile['leader_count']}")
-                print(f"Early count:         {profile['early_count']}")
-                print(f"Follower count:      {profile['follower_count']}")
-                print(f"Paired count:        {profile['paired_count']}")
-                print(f"Noise count:         {profile['noise_count']}")
-                print(f"Confidence:          {profile['confidence']}")
-                print(f"Dynamic weight:      {profile['dynamic_weight']}")
+                print(f"Leader count: {profile['leader_count']}")
+                print(f"Early count: {profile['early_count']}")
+                print(f"Follower count: {profile['follower_count']}")
+                print(f"Paired count: {profile['paired_count']}")
+                print(f"Noise count: {profile['noise_count']}")
+                print(f"Confidence: {profile['confidence']}")
+                print(f"Tracked bet resolved: {profile.get('tracked_bet_resolved', 0)}")
+                print(f"Tracked bet win rate %: {profile.get('tracked_bet_win_rate_pct', 'N/A')}")
+                print(f"Tracked bet score: {profile.get('tracked_bet_score', 'N/A')}")
+                print(f"Dynamic weight: {profile['dynamic_weight']}")
             print("=" * 80)
 
             raw_bet_candidates = [
                 g for g in result["scored_candidates"]
                 if isinstance(g, dict) and str(g.get("label", "") or "").upper() == "BET"
             ]
-
             bet_candidates = dedupe_bet_candidates_for_cycle(raw_bet_candidates)
-
             rejected_candidates = [
                 g for g in result["scored_candidates"]
                 if isinstance(g, dict) and g["label"] == "PASS"
             ]
 
-            alert_decision_counts = defaultdict(int)
-            alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
-            alert_decision_counts["cycle_deduped_away"] = (
-                len(raw_bet_candidates) - len(bet_candidates)
-            )
-
-            new_bet_alerts = []
-
-            for g in bet_candidates:
-                alert_g = annotate_opposite_side_conflict(g, alerted_bets)
-                record_clv_bet(alert_g, clv_tracker, result["now_ts"])
-
-                decision = classify_bet_alert_decision(
-                    alert_g,
-                    alerted_bets,
-                    result["now_ts"],
+            model_history_candidates = [
+                g for g in result["scored_candidates"]
+                if (
+                    isinstance(g, dict)
+                    and str(g.get("label", "") or "").upper() in {"LEAN", "BET"}
                 )
-                alert_decision_counts[decision] += 1
-
-            raw_bet_candidates = [
-                g for g in result["scored_candidates"]
-                if isinstance(g, dict) and str(g.get("label", "") or "").upper() == "BET"
             ]
 
-            bet_candidates = dedupe_bet_candidates_for_cycle(raw_bet_candidates)
+            early_watch_thresholds = {
+                "min_size_ratio": 2.0,
+                "min_total_notional": 5000,
+            }
 
-            rejected_candidates = [
-                g for g in result["scored_candidates"]
-                if isinstance(g, dict) and g["label"] == "PASS"
-            ]
+            early_watch_diagnostics = build_early_watch_diagnostics(
+                result["scored_candidates"],
+                early_watch_thresholds,
+            )
+
+            model_history_recorded_count = 0
+            model_history_cycle_keys_seen = set()
+
+            for g in model_history_candidates:
+                cycle_key = make_signal_metrics_cycle_key(g)
+                if not cycle_key:
+                    continue
+
+                if cycle_key in model_history_cycle_keys_seen:
+                    continue
+
+                model_history_cycle_keys_seen.add(cycle_key)
+
+                record_signal_metrics_row(
+                    g,
+                    signal_metrics_history,
+                    result["now_ts"],
+                    wallet_profiles,
+                )
+                model_history_recorded_count += 1
 
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
             alert_decision_counts["cycle_deduped_away"] = (
                 len(raw_bet_candidates) - len(bet_candidates)
             )
+            alert_decision_counts["model_history_candidates"] = len(model_history_candidates)
+            alert_decision_counts["model_history_recorded"] = model_history_recorded_count
 
             new_bet_alerts = []
-
             for g in bet_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
-
                 decision = classify_bet_alert_decision(
                     alert_g,
                     alerted_bets,
@@ -5265,12 +5973,6 @@ if __name__ == "__main__":
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"]):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
-                    record_signal_metrics_row(
-                        alert_g,
-                        signal_metrics_history,
-                        result["now_ts"],
-                        wallet_profiles,
-                    )
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
@@ -5329,12 +6031,28 @@ if __name__ == "__main__":
             )
 
             print("-" * 80)
+            print("=" * 80)
+            print("EARLY WATCH DIAGNOSTICS")
+            print("-" * 80)
+            print(f"Total candidates: {early_watch_diagnostics['total_candidates']}")
+            print(f"LEAN/BET candidates: {early_watch_diagnostics['lean_bet_candidates']}")
+            print(f"Single-wallet candidates: {early_watch_diagnostics['single_wallet_candidates']}")
+            print(f"Single-wallet high size ratio: {early_watch_diagnostics['single_wallet_high_size_ratio']}")
+            print(f"Single-wallet high notional: {early_watch_diagnostics['single_wallet_high_notional']}")
+            print(f"Single-wallet strong (ratio + notional): {early_watch_diagnostics['single_wallet_strong_candidates']}")
+
+            print(f"Multi-wallet candidates: {early_watch_diagnostics['multi_wallet_candidates']}")
+            print(f"Multi-wallet high size ratio: {early_watch_diagnostics['multi_wallet_high_size_ratio']}")
+            print(f"Multi-wallet high notional: {early_watch_diagnostics['multi_wallet_high_notional']}")
+            print(f"Multi-wallet strong (ratio + notional): {early_watch_diagnostics['multi_wallet_strong_candidates']}")
+            print("-" * 80)
             print("BET ALERT DECISION SUMMARY")
             print("=" * 80)
             print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
             print(f"Cycle deduped away: {alert_decision_counts['cycle_deduped_away']}")
+            print(f"Model-history candidates: {alert_decision_counts['model_history_candidates']}")
+            print(f"Model-history recorded: {alert_decision_counts['model_history_recorded']}")
             print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
-            print(f"Sent new bets - edge path: {alert_decision_counts['send_new_bet_edge']}")
             print(f"Sent new bets - confirmed follow path: {alert_decision_counts['send_new_bet_confirmed_follow']}")
             print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
             print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
@@ -5415,12 +6133,107 @@ if __name__ == "__main__":
             market_model_recommendations = build_recommendations(recent_model_signal_metrics)
             save_recommendations_json(market_model_recommendations)
 
+            market_model_early_watch_diagnostics = getattr(
+                build_recommendations,
+                "last_early_watch_diagnostics",
+                {},
+            )
+            market_model_debug_counts = getattr(
+                build_recommendations,
+                "last_debug_counts",
+                {},
+            )
+
+            signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
+                signal_stage_tracker,
+                market_model_recommendations,
+                tracked_bets,
+                clv_tracker,
+                result["now_ts"],
+            )
+        
+            save_signal_stage_tracker(signal_stage_tracker)
+            signal_stage_performance_summary = summarize_signal_stage_tracker(signal_stage_tracker)
+
             print("-" * 80)
             print("MARKET MODEL SUMMARY")
             print("=" * 80)
             print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
             print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
             print(f"Saved market model recommendations: {len(market_model_recommendations)}")
+
+            print("-" * 80)
+            print("MARKET MODEL BUILD DEBUG")
+            print("=" * 80)
+            print(f"Grouped markets: {market_model_debug_counts.get('grouped_markets', 0)}")
+            print(f"Snapshots built: {market_model_debug_counts.get('snapshot_built', 0)}")
+            print(f"Skipped - no snapshot: {market_model_debug_counts.get('skipped_no_snapshot', 0)}")
+            print(f"Skipped - bad minutes: {market_model_debug_counts.get('skipped_bad_minutes', 0)}")
+            print(f"Skipped - below window: {market_model_debug_counts.get('skipped_below_window', 0)}")
+            print(f"Skipped - above window: {market_model_debug_counts.get('skipped_above_window', 0)}")
+            print(f"Skipped - no model output: {market_model_debug_counts.get('skipped_no_model_output', 0)}")
+            print(f"Classified early_watch: {market_model_debug_counts.get('classified_early_watch', 0)}")
+            print(f"Classified early_watch_shadow: {market_model_debug_counts.get('classified_early_watch_shadow', 0)}")
+            print(f"Classified early_watch_shadow_size_ratio: {market_model_debug_counts.get('classified_early_watch_shadow_size_ratio', 0)}")
+            print(f"Classified confirmed: {market_model_debug_counts.get('classified_confirmed', 0)}")
+            print(f"Classified discard: {market_model_debug_counts.get('classified_discard', 0)}")
+
+            discard_reason_counts = market_model_debug_counts.get("discard_reason_counts", {})
+            if discard_reason_counts:
+                print("Discard reasons:")
+                for reason, count in sorted(discard_reason_counts.items(), key=lambda x: (-x[1], x[0])):
+                    print(f"  {reason}: {count}")
+
+            print("-" * 80)
+            print("EARLY WATCH DIAGNOSTICS - MARKET SNAPSHOT LAYER")
+            print("=" * 80)
+            print(f"Total snapshots: {market_model_early_watch_diagnostics.get('total_snapshots', 0)}")
+            print(f"In-window snapshots: {market_model_early_watch_diagnostics.get('in_window_snapshots', 0)}")
+            print(f"Single-wallet snapshots: {market_model_early_watch_diagnostics.get('single_wallet_snapshots', 0)}")
+            print(f"Single-wallet high size ratio: {market_model_early_watch_diagnostics.get('single_wallet_high_size_ratio', 0)}")
+            print(f"Single-wallet high notional: {market_model_early_watch_diagnostics.get('single_wallet_high_notional', 0)}")
+            print(f"Single-wallet strong: {market_model_early_watch_diagnostics.get('single_wallet_strong', 0)}")
+            print(f"Multi-wallet snapshots: {market_model_early_watch_diagnostics.get('multi_wallet_snapshots', 0)}")
+            print(f"Multi-wallet high size ratio: {market_model_early_watch_diagnostics.get('multi_wallet_high_size_ratio', 0)}")
+            print(f"Multi-wallet high notional: {market_model_early_watch_diagnostics.get('multi_wallet_high_notional', 0)}")
+            print(f"Multi-wallet strong: {market_model_early_watch_diagnostics.get('multi_wallet_strong', 0)}")
+            print(f"Classified early_watch: {market_model_early_watch_diagnostics.get('classified_early_watch', 0)}")
+            print(f"Classified confirmed: {market_model_early_watch_diagnostics.get('classified_confirmed', 0)}")
+            print(f"Classified discard: {market_model_early_watch_diagnostics.get('classified_discard', 0)}")
+
+            print(f"Signal stage tracker rows: {signal_stage_tracker_summary['tracker_rows']}")
+            print(f"New early_watch rows this cycle: {signal_stage_tracker_summary['newly_seen_early_watch']}")
+            print(f"New confirmed rows this cycle: {signal_stage_tracker_summary['newly_seen_confirmed']}")
+            print(f"New early_watch -> confirmed transitions this cycle: {signal_stage_tracker_summary['newly_transitioned']}")
+            print(f"Total transitioned rows tracked: {signal_stage_tracker_summary['transitioned_total']}")
+
+            print("-" * 80)
+            print("SIGNAL STAGE PERFORMANCE SUMMARY - ALL TIME")
+            print("=" * 80)
+
+            for bucket_name, bucket_label in [
+                ("early_watch_only", "Early-watch only"),
+                ("transitioned", "Early-watch -> confirmed"),
+                ("confirmed_only", "Confirmed only"),
+            ]:
+                bucket = signal_stage_performance_summary[bucket_name]
+                print("-" * 80)
+                print(f"{bucket_label}:")
+                print(f"Rows: {bucket['row_count']}")
+                print(f"Currently active: {bucket['active_count']}")
+                print(f"Tracked alerts: {bucket['tracked_alert_count']}")
+                print(f"Resolved alerts: {bucket['resolved_alert_count']}")
+                print(f"Wins: {bucket['win_count']}")
+                print(f"Losses: {bucket['loss_count']}")
+                print(f"Win rate: {bucket['win_rate_pct']}")
+                print(f"CLV tracked: {bucket['clv_tracked_count']}")
+                print(f"CLV ready: {bucket['clv_ready_count']}")
+                print(f"CLV positive: {bucket['clv_positive_count']}")
+                print(f"Positive snapshot CLV rate: {bucket['positive_snapshot_clv_rate']}")
+                print(f"Avg snapshot CLV cents: {bucket['avg_snapshot_clv_cents']}")
+                print(f"Transition count: {bucket['transition_count']}")
+                print(f"Avg transition minutes: {bucket['avg_transition_minutes']}")
+                print_stage_edge_analysis(signal_stage_tracker)
 
             top_model_bets = [
                 row for row in market_model_recommendations
