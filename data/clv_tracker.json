@@ -51,6 +51,45 @@
     "snapshot_clv_ready": false,
     "wallet": "0x9cb990f1862568a63d8601efeebe0304225c32f2"
   },
+  "bun-fre-bay-2026-04-04-bay||Yes||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
+    "entry_price": 0.635,
+    "first_seen_ts": 1775308777,
+    "last_seen_ts": 1775308777,
+    "latest_price": 0.635,
+    "market": "Will FC Bayern M\u00fcnchen win on 2026-04-04?",
+    "outcome": "Yes",
+    "slug": "bun-fre-bay-2026-04-04-bay",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
+  },
+  "bun-hsv-aug-2026-04-04-total-2pt5||Over||0x07921379f7b31ef93da634b688b2fe36897db778": {
+    "entry_price": 0.555,
+    "first_seen_ts": 1775308777,
+    "last_seen_ts": 1775323994,
+    "latest_price": 0.0005,
+    "market": "Hamburger SV vs. FC Augsburg: O/U 2.5",
+    "outcome": "Over",
+    "slug": "bun-hsv-aug-2026-04-04-total-2pt5",
+    "snapshot_clv": -0.5545,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x07921379f7b31ef93da634b688b2fe36897db778"
+  },
+  "cbb-arz-mich-2026-04-04||Michigan Wolverines||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
+    "entry_price": 0.525,
+    "first_seen_ts": 1775323155,
+    "last_seen_ts": 1775323994,
+    "latest_price": 0.525,
+    "market": "Arizona Wildcats vs. Michigan Wolverines",
+    "outcome": "Michigan Wolverines",
+    "slug": "cbb-arz-mich-2026-04-04",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
+  },
   "cbb-nmx-tulsa-2026-04-02-total-160pt5||Over||0xe24838258b572f1771dffba3bcdde57a78def293": {
     "entry_price": 0.51,
     "first_seen_ts": 1774981058,
@@ -63,6 +102,32 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xe24838258b572f1771dffba3bcdde57a78def293"
+  },
+  "cbb-uconn-mich-2026-04-06-total-144pt5||Over||0xe24838258b572f1771dffba3bcdde57a78def293": {
+    "entry_price": 0.515,
+    "first_seen_ts": 1775485740,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.545,
+    "market": "Connecticut Huskies vs. Michigan Wolverines: O/U 144.5",
+    "outcome": "Over",
+    "slug": "cbb-uconn-mich-2026-04-06-total-144pt5",
+    "snapshot_clv": 0.03,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xe24838258b572f1771dffba3bcdde57a78def293"
+  },
+  "cbb-uconn-mich-2026-04-06-total-144pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.475,
+    "first_seen_ts": 1775489321,
+    "last_seen_ts": 1775489525,
+    "latest_price": 0.475,
+    "market": "Connecticut Huskies vs. Michigan Wolverines: O/U 144.5",
+    "outcome": "Under",
+    "slug": "cbb-uconn-mich-2026-04-06-total-144pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "col1-inm-ad1-2026-03-30-ad1||Yes||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.61,
@@ -181,6 +246,71 @@
     "snapshot_clv_ready": false,
     "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
   },
+  "fl1-asm-olm-2026-04-05-asm||No||0xfbf3d501e88815464642d0e913f15379c3eeb218": {
+    "entry_price": 0.535,
+    "first_seen_ts": 1775413607,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.535,
+    "market": "Will AS Monaco FC win on 2026-04-05?",
+    "outcome": "No",
+    "slug": "fl1-asm-olm-2026-04-05-asm",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xfbf3d501e88815464642d0e913f15379c3eeb218"
+  },
+  "lal-gir-vil-2026-04-06-vil||No||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
+    "entry_price": 0.585,
+    "first_seen_ts": 1775499649,
+    "last_seen_ts": 1775502311,
+    "latest_price": 0.585,
+    "market": "Will Villarreal CF win on 2026-04-06?",
+    "outcome": "No",
+    "slug": "lal-gir-vil-2026-04-06-vil",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
+  },
+  "lal-mal-rea-2026-04-04-rea||No||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
+    "entry_price": 0.375,
+    "first_seen_ts": 1775310097,
+    "last_seen_ts": 1775310816,
+    "latest_price": 0.375,
+    "market": "Will Real Madrid CF win on 2026-04-04?",
+    "outcome": "No",
+    "slug": "lal-mal-rea-2026-04-04-rea",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
+  },
+  "lal-mal-rea-2026-04-04-rea||No||0x9cb990f1862568a63d8601efeebe0304225c32f2": {
+    "entry_price": 0.375,
+    "first_seen_ts": 1775309597,
+    "last_seen_ts": 1775323994,
+    "latest_price": 0.9995,
+    "market": "Will Real Madrid CF win on 2026-04-04?",
+    "outcome": "No",
+    "slug": "lal-mal-rea-2026-04-04-rea",
+    "snapshot_clv": 0.6245,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x9cb990f1862568a63d8601efeebe0304225c32f2"
+  },
+  "lal-val-cel-2026-04-05-btts||No||0x2005d16a84ceefa912d4e380cd32e7ff827875ea": {
+    "entry_price": 0.485,
+    "first_seen_ts": 1775397948,
+    "last_seen_ts": 1775397948,
+    "latest_price": 0.485,
+    "market": "Valencia CF vs. RC Celta de Vigo: Both Teams to Score",
+    "outcome": "No",
+    "slug": "lal-val-cel-2026-04-05-btts",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x2005d16a84ceefa912d4e380cd32e7ff827875ea"
+  },
   "lol-pnga-itz-2026-03-30||INTZ e-Sports||0x8c0b024c17831a0dde038547b7e791ae6a0d7aa5": {
     "entry_price": 0.43,
     "first_seen_ts": 1774904278,
@@ -207,6 +337,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0xec981ed70ae69c5cbcac08c1ba063e734f6bafcd"
   },
+  "mlb-atl-ari-2026-04-05-total-9pt5||Over||0xe40172522c7c64afa2d052ddae6c92cd0f417b88": {
+    "entry_price": 0.455,
+    "first_seen_ts": 1775414178,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.455,
+    "market": "Atlanta Braves vs. Arizona Diamondbacks: O/U 9.5",
+    "outcome": "Over",
+    "slug": "mlb-atl-ari-2026-04-05-total-9pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xe40172522c7c64afa2d052ddae6c92cd0f417b88"
+  },
   "mlb-cle-lad-2026-03-30||Los Angeles Dodgers||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
     "entry_price": 0.615,
     "first_seen_ts": 1774922946,
@@ -220,6 +363,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
+  "mlb-hou-oak-2026-04-05||Houston Astros||0xc8075693f48668a264b9fa313b47f52712fcc12b": {
+    "entry_price": 0.545,
+    "first_seen_ts": 1775411164,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.535,
+    "market": "Houston Astros vs. Athletics",
+    "outcome": "Houston Astros",
+    "slug": "mlb-hou-oak-2026-04-05",
+    "snapshot_clv": -0.01,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xc8075693f48668a264b9fa313b47f52712fcc12b"
+  },
   "mlb-laa-chc-2026-04-01-total-6pt5||Over||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
     "entry_price": 0.445,
     "first_seen_ts": 1775065855,
@@ -231,6 +387,32 @@
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
+  "mlb-lad-tor-2026-04-06||Toronto Blue Jays||0xc8075693f48668a264b9fa313b47f52712fcc12b": {
+    "entry_price": 0.455,
+    "first_seen_ts": 1775508430,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.455,
+    "market": "Los Angeles Dodgers vs. Toronto Blue Jays",
+    "outcome": "Toronto Blue Jays",
+    "slug": "mlb-lad-tor-2026-04-06",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xc8075693f48668a264b9fa313b47f52712fcc12b"
+  },
+  "mlb-mil-bos-2026-04-06||Boston Red Sox||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.475,
+    "first_seen_ts": 1775499649,
+    "last_seen_ts": 1775499649,
+    "latest_price": 0.475,
+    "market": "Milwaukee Brewers vs. Boston Red Sox",
+    "outcome": "Boston Red Sox",
+    "slug": "mlb-mil-bos-2026-04-06",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
   },
   "mlb-min-kc-2026-03-30-total-9pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14": {
@@ -323,6 +505,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
+  "mlb-sd-pit-2026-04-06||San Diego Padres||0x507e52ef684ca2dd91f90a9d26d149dd3288beae": {
+    "entry_price": 0.435,
+    "first_seen_ts": 1775508430,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.435,
+    "market": "San Diego Padres vs. Pittsburgh Pirates",
+    "outcome": "San Diego Padres",
+    "slug": "mlb-sd-pit-2026-04-06",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x507e52ef684ca2dd91f90a9d26d149dd3288beae"
   },
   "nba-bos-atl-2026-03-30-spread-home-2pt5||Celtics||0xbddf61af533ff524d27154e589d2d7a81510c684": {
     "entry_price": 0.495,
@@ -519,6 +714,32 @@
     "snapshot_clv_ready": false,
     "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
+  "nba-det-orl-2026-04-06-total-221pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.475,
+    "first_seen_ts": 1775502311,
+    "last_seen_ts": 1775502311,
+    "latest_price": 0.475,
+    "market": "Pistons vs. Magic: O/U 221.5",
+    "outcome": "Under",
+    "slug": "nba-det-orl-2026-04-06-total-221pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
+  "nba-ind-cle-2026-04-05-spread-home-16pt5||Cavaliers||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.495,
+    "first_seen_ts": 1775396601,
+    "last_seen_ts": 1775396601,
+    "latest_price": 0.495,
+    "market": "Spread: Cavaliers (-16.5)",
+    "outcome": "Cavaliers",
+    "slug": "nba-ind-cle-2026-04-05-spread-home-16pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
   "nba-mil-hou-2026-04-01-total-218pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
     "entry_price": 0.53,
     "first_seen_ts": 1775066680,
@@ -675,6 +896,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
   },
+  "nba-phx-chi-2026-04-05-total-239pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.49,
+    "first_seen_ts": 1775411870,
+    "last_seen_ts": 1775411870,
+    "latest_price": 0.49,
+    "market": "Suns vs. Bulls: O/U 239.5",
+    "outcome": "Under",
+    "slug": "nba-phx-chi-2026-04-05-total-239pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
   "nba-phx-mem-2026-03-30-total-227pt5||Over||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
     "entry_price": 0.525,
     "first_seen_ts": 1774914195,
@@ -766,6 +1000,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x84dbb7103982e3617704a2ed7d5b39691952aeeb"
   },
+  "nba-sas-den-2026-04-04-total-243pt5||Under||0xee613b3fc183ee44f9da9c05f53e2da107e3debf": {
+    "entry_price": 0.51,
+    "first_seen_ts": 1775311891,
+    "last_seen_ts": 1775311891,
+    "latest_price": 0.51,
+    "market": "Spurs vs. Nuggets: O/U 243.5",
+    "outcome": "Under",
+    "slug": "nba-sas-den-2026-04-04-total-243pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee613b3fc183ee44f9da9c05f53e2da107e3debf"
+  },
   "nba-sas-lac-2026-04-02||Clippers||0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c": {
     "entry_price": 0.385,
     "first_seen_ts": 1775137325,
@@ -776,8 +1023,21 @@
     "slug": "nba-sas-lac-2026-04-02",
     "snapshot_clv": 0.0,
     "snapshot_clv_positive": false,
-    "snapshot_clv_ready": true,
+    "snapshot_clv_ready": false,
     "wallet": "0x6e82b93eb57b01a63027bd0c6d2f3f04934a752c"
+  },
+  "nba-tor-bos-2026-04-05-spread-home-9pt5||Raptors||0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1": {
+    "entry_price": 0.505,
+    "first_seen_ts": 1775413607,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.505,
+    "market": "Spread: Celtics (-9.5)",
+    "outcome": "Raptors",
+    "slug": "nba-tor-bos-2026-04-05-spread-home-9pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x2a2c53bd278c04da9962fcf96490e17f3dfb9bc1"
   },
   "nba-was-lal-2026-03-30-spread-home-15pt5||Lakers||0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0": {
     "entry_price": 0.525,
@@ -844,6 +1104,19 @@
     "snapshot_clv_ready": false,
     "wallet": "0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee"
   },
+  "nhl-chi-sj-2026-04-06||Sharks||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
+    "entry_price": 0.615,
+    "first_seen_ts": 1775485740,
+    "last_seen_ts": 1775502311,
+    "latest_price": 0.595,
+    "market": "Blackhawks vs. Sharks",
+    "outcome": "Sharks",
+    "slug": "nhl-chi-sj-2026-04-06",
+    "snapshot_clv": -0.02,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
+  },
   "nhl-dal-bos-2026-03-31||Bruins||0xaa075924e1dc7cff3b9fab67401126338c4d2125": {
     "entry_price": 0.455,
     "first_seen_ts": 1774977250,
@@ -870,6 +1143,32 @@
     "snapshot_clv_ready": false,
     "wallet": "0xaa075924e1dc7cff3b9fab67401126338c4d2125"
   },
+  "nhl-fla-pit-2026-04-05||Penguins||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
+    "entry_price": 0.675,
+    "first_seen_ts": 1775411164,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.675,
+    "market": "Panthers vs. Penguins",
+    "outcome": "Penguins",
+    "slug": "nhl-fla-pit-2026-04-05",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
+  },
+  "nhl-nsh-lak-2026-04-06||Kings||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
+    "entry_price": 0.565,
+    "first_seen_ts": 1775500530,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.555,
+    "market": "Predators vs. Kings",
+    "outcome": "Kings",
+    "slug": "nhl-nsh-lak-2026-04-06",
+    "snapshot_clv": -0.01,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
+  },
   "nhl-stl-sj-2026-03-30||Blues||0x03e8a544e97eeff5753bc1e90d46e5ef22af1697": {
     "entry_price": 0.505,
     "first_seen_ts": 1774921592,
@@ -895,6 +1194,19 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0xf68a281980f8c13828e84e147e3822381d6e5b1b"
+  },
+  "nhl-tb-buf-2026-04-06||Sabres||0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee": {
+    "entry_price": 0.465,
+    "first_seen_ts": 1775489078,
+    "last_seen_ts": 1775502311,
+    "latest_price": 0.485,
+    "market": "Lightning vs. Sabres",
+    "outcome": "Sabres",
+    "slug": "nhl-tb-buf-2026-04-06",
+    "snapshot_clv": 0.02,
+    "snapshot_clv_positive": true,
+    "snapshot_clv_ready": true,
+    "wallet": "0x6a72f61820b26b1fe4d956e17b6dc2a1ea3033ee"
   },
   "nhl-tor-ana-2026-03-30-total-6pt5||Under||0x2005d16a84ceefa912d4e380cd32e7ff827875ea": {
     "entry_price": 0.455,
@@ -986,6 +1298,84 @@
     "snapshot_clv_positive": false,
     "snapshot_clv_ready": false,
     "wallet": "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697"
+  },
+  "sea-int-rom-2026-04-05-int||No||0x57cd939930fd119067ca9dc42b22b3e15708a0fb": {
+    "entry_price": 0.395,
+    "first_seen_ts": 1775413607,
+    "last_seen_ts": 1775414178,
+    "latest_price": 0.395,
+    "market": "Will FC Internazionale Milano win on 2026-04-05?",
+    "outcome": "No",
+    "slug": "sea-int-rom-2026-04-05-int",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x57cd939930fd119067ca9dc42b22b3e15708a0fb"
+  },
+  "sea-int-rom-2026-04-05-total-2pt5||Under||0x204f72f35326db932158cba6adff0b9a1da95e14": {
+    "entry_price": 0.485,
+    "first_seen_ts": 1775394917,
+    "last_seen_ts": 1775394917,
+    "latest_price": 0.485,
+    "market": "FC Internazionale Milano vs. AS Roma: O/U 2.5",
+    "outcome": "Under",
+    "slug": "sea-int-rom-2026-04-05-total-2pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
+  },
+  "ucl-rma1-bay1-2026-04-07-bay1||Yes||0xee67f4f549180f564dd5910b1024b8c6729cef38": {
+    "entry_price": 0.425,
+    "first_seen_ts": 1775500530,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.415,
+    "market": "Will FC Bayern M\u00fcnchen win on 2026-04-07?",
+    "outcome": "Yes",
+    "slug": "ucl-rma1-bay1-2026-04-07-bay1",
+    "snapshot_clv": -0.01,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0xee67f4f549180f564dd5910b1024b8c6729cef38"
+  },
+  "ucl-rma1-bay1-2026-04-07-spread-away-1pt5||FC Bayern M\u00fcnchen||0xee67f4f549180f564dd5910b1024b8c6729cef38": {
+    "entry_price": 0.265,
+    "first_seen_ts": 1775485740,
+    "last_seen_ts": 1775499649,
+    "latest_price": 0.265,
+    "market": "Spread: FC Bayern M\u00fcnchen (-1.5)",
+    "outcome": "FC Bayern M\u00fcnchen",
+    "slug": "ucl-rma1-bay1-2026-04-07-spread-away-1pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0xee67f4f549180f564dd5910b1024b8c6729cef38"
+  },
+  "ucl-rma1-bay1-2026-04-07-spread-away-1pt5||Real Madrid CF||0x204f72f35326db932158cba6adff0b9a1da95e14": {
+    "entry_price": 0.735,
+    "first_seen_ts": 1775500530,
+    "last_seen_ts": 1775500530,
+    "latest_price": 0.735,
+    "market": "Spread: FC Bayern M\u00fcnchen (-1.5)",
+    "outcome": "Real Madrid CF",
+    "slug": "ucl-rma1-bay1-2026-04-07-spread-away-1pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": true,
+    "wallet": "0x204f72f35326db932158cba6adff0b9a1da95e14"
+  },
+  "ucl-spo1-ars-2026-04-07-total-2pt5||Over||0x07921379f7b31ef93da634b688b2fe36897db778": {
+    "entry_price": 0.515,
+    "first_seen_ts": 1775508430,
+    "last_seen_ts": 1775508430,
+    "latest_price": 0.515,
+    "market": "Sporting CP vs. Arsenal FC: O/U 2.5",
+    "outcome": "Over",
+    "slug": "ucl-spo1-ars-2026-04-07-total-2pt5",
+    "snapshot_clv": 0.0,
+    "snapshot_clv_positive": false,
+    "snapshot_clv_ready": false,
+    "wallet": "0x07921379f7b31ef93da634b688b2fe36897db778"
   },
   "uef-bih-ita-2026-03-31-total-2pt5||Over||0x204f72f35326db932158cba6adff0b9a1da95e14": {
     "entry_price": 0.46,

@@ -118,21 +118,14 @@ def get_minutes_to_start(row):
     if not isinstance(row, dict):
         return None
 
-    existing = row.get("minutes_to_start")
-    if existing is not None:
-        try:
-            return int(existing)
-        except Exception:
-            pass
 
     event_dt = parse_event_start_time(row.get("event_start_time"))
-    row_ts = parse_ts(row.get("ts"))
-
-    if event_dt is None or row_ts is None:
+    if event_dt is None:
         return None
 
-    alert_dt = datetime.fromtimestamp(row_ts, tz=timezone.utc)
-    return int((event_dt - alert_dt).total_seconds() / 60)
+
+    now_dt = datetime.now(timezone.utc)
+    return int((event_dt - now_dt).total_seconds() / 60)
 
 
 def get_model_window_bucket(minutes_to_start):
@@ -261,6 +254,14 @@ def build_market_snapshot(rows):
     minutes_to_start = get_minutes_to_start(latest)
     time_bucket = get_model_window_bucket(minutes_to_start)
 
+    latest_ts = parse_ts(latest.get("ts"))
+    now_ts = int(time.time())
+
+    if latest_ts is None:
+        since_last_buy_seconds = None
+    else:
+        since_last_buy_seconds = max(0, now_ts - latest_ts)
+
     snapshot = {
         "slug": str(latest.get("slug", "") or "").strip(),
         "market": str(latest.get("market", "") or latest.get("title", "") or "").strip(),
@@ -298,10 +299,31 @@ def build_market_snapshot(rows):
         "latest_consensus_score": latest.get("consensus_score"),
         "latest_sequence_role": latest.get("sequence_role"),
         "latest_ts": latest.get("ts"),
+        "since_last_buy_seconds": since_last_buy_seconds,
     }
 
     return snapshot
 
+def get_recent_activity_penalty_points(snapshot):
+    since_last_buy = snapshot.get("since_last_buy_seconds")
+
+    if since_last_buy is None:
+        return 8, "no recent confirmation"
+
+    try:
+        since_last_buy = float(since_last_buy)
+    except Exception:
+        return 8, "no recent confirmation"
+
+    if since_last_buy <= 300:
+        return 0, "very recent sharp confirmation"
+    if since_last_buy <= 900:
+        return 1, "recent sharp confirmation"
+    if since_last_buy <= 1800:
+        return 3, "aging confirmation"
+    if since_last_buy <= 3600:
+        return 6, "stale confirmation"
+    return 10, "very stale confirmation"
 
 def score_market_snapshot(snapshot):
     if not isinstance(snapshot, dict):
@@ -309,6 +331,8 @@ def score_market_snapshot(snapshot):
 
     score = 0
     reasons = []
+
+    recent_activity_penalty, recent_activity_reason = get_recent_activity_penalty_points(snapshot)
 
     total_notional = parse_float(snapshot.get("total_notional"), 0.0)
     max_size_ratio = parse_float(snapshot.get("max_size_ratio"), 0.0)
@@ -415,6 +439,10 @@ def score_market_snapshot(snapshot):
             score -= 20
             reasons.append("market already started")
 
+    if recent_activity_penalty > 0:
+        score -= recent_activity_penalty
+        reasons.append(recent_activity_reason)
+
     recommendation = "PASS"
     stake_pct = 0
 
@@ -424,9 +452,19 @@ def score_market_snapshot(snapshot):
     elif unique_wallet_count >= 2 and score >= 45:
         recommendation = "LEAN"
         stake_pct = 50
-    elif unique_wallet_count == 1 and score >= 55:
+    elif (
+        unique_wallet_count == 1
+        and score >= 50
+        and max_size_ratio >= 3
+        and total_notional >= 5000
+    ):
         recommendation = "LEAN"
         stake_pct = 25
+        reasons.append("strong single-wallet signal")
+    elif score >= 60:
+        recommendation = "LEAN"
+        stake_pct = 25
+        reasons.append("model-confirmed signal (fallback)")
 
     return {
         "model_score": score,
@@ -454,9 +492,9 @@ def classify_signal_stage(snapshot, model_output):
         or max_followers >= 1
         or max_consensus_score >= 50
     ):
-        if model_score >= 30 and 0 <= minutes_to_start <= MODEL_MAX_MINUTES_TO_START:
+        if model_score >= 45 and 0 <= minutes_to_start <= MODEL_MAX_MINUTES_TO_START:
             return "confirmed"
-        if model_score < 30:
+        if model_score < 45:
             discard_reason = "confirmed_candidate_score_too_low"
         elif minutes_to_start < 0:
             discard_reason = "confirmed_candidate_started"
@@ -639,7 +677,8 @@ def build_recommendations(rows):
         row.update(model_output)
         row["signal_stage"] = signal_stage
 
-        if signal_stage in {"early_watch", "confirmed"}:
+        recommendation = str(row.get("recommendation", "") or "").upper()
+        if signal_stage in {"early_watch", "confirmed"} and recommendation in {"LEAN", "BET"}:
             recommendations.append(row)
 
     recommendations.sort(
@@ -727,7 +766,15 @@ def print_recommendations(recommendations, limit=25):
         print(f"Max size ratio: {row.get('max_size_ratio', 'N/A')}")
         print(f"Avg size ratio: {row.get('avg_size_ratio', 'N/A')}")
         print(f"Avg leaderboard ROI: {row.get('avg_leaderboard_roi', 'N/A')}")
-        print(f"Latest edge %: {row.get('latest_edge_pct', 'N/A')}")
+        since_last_buy = row.get("since_last_buy_seconds")
+        if since_last_buy is None:
+            since_last_buy_display = "N/A"
+        else:
+            try:
+                since_last_buy_display = int(float(since_last_buy))
+            except Exception:
+                since_last_buy_display = "N/A"
+        print(f"Last sharp bet age (s): {since_last_buy_display}")
         print(f"Max followers: {row.get('max_followers', 'N/A')}")
         print(f"Max consensus score: {row.get('max_consensus_score', 'N/A')}")
         print(f"Reasons: {', '.join(row.get('reasons', []))}")

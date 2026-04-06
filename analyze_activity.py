@@ -245,42 +245,93 @@ def filter_valid_buy_trades(trades):
 
     return valid
 
+def compute_wallet_sequence_baselines(trades):
+    sequence_notionals = defaultdict(float)
 
-def compute_wallet_medians(trades):
-    wallet_notionals = defaultdict(list)
 
     for t in trades:
         if not isinstance(t, dict):
             continue
 
-        wallet = t.get("proxyWallet", "")
+
+        wallet = str(t.get("proxyWallet", "") or "").strip().lower()
+        slug = str(t.get("slug", "") or "").strip()
+        outcome = str(t.get("outcome", "") or "").strip()
+
+
+        if not wallet or not slug or not outcome:
+            continue
+
+
         size = float(t.get("size", 0) or 0)
         price = float(t.get("price", 0) or 0)
         notional = size * price
 
-        if notional >= 50:
-            wallet_notionals[wallet].append(notional)
 
-    wallet_medians = {}
-
-    for wallet, notionals in wallet_notionals.items():
-        notionals = sorted(notionals)
-
-        if len(notionals) == 0:
-            wallet_medians[wallet] = 0
+        if notional <= 0:
             continue
 
-        if len(notionals) < 5:
-            wallet_medians[wallet] = sum(notionals) / len(notionals)
-            continue
 
-        n = len(notionals)
-        if n % 2 == 1:
-            wallet_medians[wallet] = notionals[n // 2]
-        else:
-            wallet_medians[wallet] = (notionals[n // 2 - 1] + notionals[n // 2]) / 2
+        sequence_notionals[(wallet, slug, outcome)] += notional
 
-    return wallet_medians
+
+    wallet_sequence_notionals = defaultdict(list)
+
+
+    for (wallet, slug, outcome), total_notional in sequence_notionals.items():
+        if total_notional >= 50:
+            wallet_sequence_notionals[wallet].append(total_notional)
+
+
+    for wallet in wallet_sequence_notionals:
+        wallet_sequence_notionals[wallet] = sorted(wallet_sequence_notionals[wallet])
+
+
+    return wallet_sequence_notionals, dict(sequence_notionals)
+
+
+def get_wallet_sequence_median_notional(
+    wallet,
+    slug,
+    outcome,
+    wallet_sequence_notionals,
+    sequence_notional_lookup,
+):
+    wallet = str(wallet or "").strip().lower()
+    slug = str(slug or "").strip()
+    outcome = str(outcome or "").strip()
+
+
+    sorted_notionals = list(wallet_sequence_notionals.get(wallet, []))
+    if not sorted_notionals:
+        return 0
+
+
+    current_sequence_notional = sequence_notional_lookup.get((wallet, slug, outcome))
+
+
+    comparison_notionals = list(sorted_notionals)
+    if current_sequence_notional is not None and len(comparison_notionals) > 1:
+        try:
+            comparison_notionals.remove(current_sequence_notional)
+        except ValueError:
+            pass
+
+
+    if not comparison_notionals:
+        comparison_notionals = list(sorted_notionals)
+
+
+    if len(comparison_notionals) < 5:
+        return sum(comparison_notionals) / len(comparison_notionals)
+
+
+    n = len(comparison_notionals)
+    if n % 2 == 1:
+        return comparison_notionals[n // 2]
+
+
+    return (comparison_notionals[n // 2 - 1] + comparison_notionals[n // 2]) / 2
 
 
 def group_accumulation_candidates(trades):
@@ -977,7 +1028,14 @@ def fetch_gamma_market_metadata(slug, outcome):
     return result
 
 
-def attach_position_data_and_score(groups, position_lookup, wallet_medians, wallet_profiles, fair_price_lookup):
+def attach_position_data_and_score(
+    groups,
+    position_lookup,
+    wallet_sequence_notionals,
+    sequence_notional_lookup,
+    wallet_profiles,
+    fair_price_lookup,
+):
     scored = []
 
     for g in groups:
@@ -988,14 +1046,23 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
         pos = position_lookup.get(key)
 
         wallet = g["wallet"]
-        median_notional = wallet_medians.get(wallet, 0)
+        median_notional = get_wallet_sequence_median_notional(
+            wallet,
+            g.get("slug", ""),
+            g.get("outcome", ""),
+            wallet_sequence_notionals,
+            sequence_notional_lookup,
+        )
 
         avg_trade_size = g["total_size"] / max(g["buy_count"], 1)
         avg_trade_price = float(g.get("avg_trade_price", 0) or 0)
         avg_trade_notional = avg_trade_size * avg_trade_price
+        total_notional = float(g.get("total_size", 0) or 0) * avg_trade_price
+
 
         # --- NEW: avoid overpriced favorites ---
         MAX_ENTRY_PRICE = 0.80
+
 
         if avg_trade_price > MAX_ENTRY_PRICE:
             g["label"] = "PASS"
@@ -1005,11 +1072,13 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
             # --- NEW: market movement (chase) penalty ---
             movement = g.get("market_movement_cents")
 
+
             if movement is not None:
                 # mild chase
                 if movement > 1.5 and movement <= 3.0:
                     g["stake_pct"] = max(int(g.get("stake_pct", 0) * 0.75), 10)
                     g["reason"] += " | Chase: mild"
+
 
                 # moderate chase
                 elif movement > 3.0 and movement <= 5.0:
@@ -1017,6 +1086,7 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
                     if g.get("label") == "BET":
                         g["label"] = "LEAN"
                     g["reason"] += " | Chase: moderate"
+
 
                 # extreme chase → PASS
                 elif movement > 5.0:
@@ -1027,24 +1097,28 @@ def attach_position_data_and_score(groups, position_lookup, wallet_medians, wall
             scored.append(g)
             continue
         if median_notional > 0:
-            size_ratio = avg_trade_notional / median_notional
+            size_ratio = total_notional / median_notional
         else:
             size_ratio = 0
 
-        size_ratio = min(size_ratio, 10)
-
         if size_ratio >= 10:
             size_points = 30
-        elif size_ratio >= 5:
+        elif size_ratio >= 6:
+            size_points = 26
+        elif size_ratio >= 4:
             size_points = 22
         elif size_ratio >= 3:
-            size_points = 16
+            size_points = 18
         elif size_ratio >= 2:
+            size_points = 14
+        elif size_ratio >= 1.5:
             size_points = 10
-        elif size_ratio >= 1:
-            size_points = 5
+        elif size_ratio >= 1.0:
+            size_points = 6
+        elif size_ratio >= 0.75:
+            size_points = 3
         elif size_ratio >= 0.5:
-            size_points = 2
+            size_points = 1
         else:
             size_points = 0
 
@@ -4836,7 +4910,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     )
     valid_buy_trades = filter_valid_buy_trades(recent_trades)
 
-    wallet_medians = compute_wallet_medians(valid_buy_trades)
+    wallet_sequence_notionals, sequence_notional_lookup = compute_wallet_sequence_baselines(valid_buy_trades)
 
     accumulation_groups = group_accumulation_candidates(valid_buy_trades)
     accumulation_groups = mark_recent_paired_activity(accumulation_groups)
@@ -4889,7 +4963,8 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     scored_candidates = attach_position_data_and_score(
         real_candidates,
         position_lookup,
-        wallet_medians,
+        wallet_sequence_notionals,
+        sequence_notional_lookup,
         wallet_profiles,
         fair_price_lookup
     )
@@ -5702,7 +5777,10 @@ def print_signal(g):
         except Exception:
             pass
     print(f"Accumulation points: {g['accumulation_points']}")
-    print(f"Size ratio:          {g['size_ratio']}")
+    size_ratio_display = g.get("size_ratio")
+    if size_ratio_display is None:
+        size_ratio_display = "N/A"
+    print(f"Size ratio:          {size_ratio_display}")
     print(f"Size points:         {g['size_points']}")
     print(f"Support tier:        {g.get('consensus_type', 'None')}")
     print(f"Support score:       {g.get('consensus_score', 0)}")
@@ -6367,7 +6445,10 @@ if __name__ == "__main__":
                         print(f"  Reason:            {row.get('reason', 'N/A')}")
                         print(f"  Market Movement:   {row.get('market_movement_cents', 'N/A')}")
                         print(f"  Since last buy(s): {row.get('seconds_since_last_buy', 'N/A')}")
-                        print(f"  Size ratio:        {row.get('size_ratio', 'N/A')}")
+                        size_ratio_display = row.get("size_ratio")
+                        if size_ratio_display is None:
+                            size_ratio_display = "N/A"
+                        print(f"  Size ratio:        {size_ratio_display}")
 
             if rejected_candidates:
                 print("-" * 80)
