@@ -893,6 +893,20 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
 
     return wallet_profiles
 
+def format_wallet_record(wallet_profiles, wallet):
+    wallet = str(wallet or "").strip().lower()
+    profile = wallet_profiles.get(wallet, {})
+
+    wins = int(profile.get("resolved_wins", 0) or 0)
+    losses = int(profile.get("resolved_losses", 0) or 0)
+    total = wins + losses
+
+    if total <= 0:
+        return "N/A"
+
+    win_pct = round((wins / total) * 100, 1)
+    return f"{wins}-{losses} ({win_pct}%)"
+
 def filter_active_wallets(wallet_profiles):
     filtered = []
 
@@ -5880,17 +5894,21 @@ def send_pushover_bet_alert(g):
     except Exception:
         score_display = "N/A"
 
-    message = (
-        f"{phase_label} | {market_text}\n"
-        f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
-        f"Score: {score_display} | Edge: {edge_pct_display}%\n"
-        f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-        f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
-        f"Followers: {followers_display}\n"
-        f"Start: {start_str}\n"
-        f"Last Bet Placed: {last_bet_str}\n"
-        f"Wallet: {g.get('wallet', 'N/A')}"
-    )
+        wallet = g.get("wallet", "N/A")
+        wallet_record = format_wallet_record(wallet_profiles, wallet)
+
+        message = (
+            f"{phase_label} | {market_text}\n"
+            f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
+            f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
+            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
+            f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
+            f"Followers: {followers_display}\n"
+            f"Start: {start_str}\n"
+            f"Last Bet Placed: {last_bet_str}\n"
+            f"Wallet Record: {wallet_record}\n"
+            f"Wallet: {wallet}"
+        )
 
     try:
         api_token = str(PUSHOVER_API_TOKEN).strip()
