@@ -245,8 +245,8 @@ def filter_valid_buy_trades(trades):
 
     return valid
 
-def compute_wallet_sequence_baselines(trades):
-    sequence_notionals = defaultdict(float)
+def compute_wallet_market_baselines(trades):
+    market_notionals = defaultdict(float)
 
 
     for t in trades:
@@ -256,10 +256,9 @@ def compute_wallet_sequence_baselines(trades):
 
         wallet = str(t.get("proxyWallet", "") or "").strip().lower()
         slug = str(t.get("slug", "") or "").strip()
-        outcome = str(t.get("outcome", "") or "").strip()
 
 
-        if not wallet or not slug or not outcome:
+        if not wallet or not slug:
             continue
 
 
@@ -272,48 +271,46 @@ def compute_wallet_sequence_baselines(trades):
             continue
 
 
-        sequence_notionals[(wallet, slug, outcome)] += notional
+        market_notionals[(wallet, slug)] += notional
 
 
-    wallet_sequence_notionals = defaultdict(list)
+    wallet_market_notionals = defaultdict(list)
 
 
-    for (wallet, slug, outcome), total_notional in sequence_notionals.items():
+    for (wallet, slug), total_notional in market_notionals.items():
         if total_notional >= 50:
-            wallet_sequence_notionals[wallet].append(total_notional)
+            wallet_market_notionals[wallet].append(total_notional)
 
 
-    for wallet in wallet_sequence_notionals:
-        wallet_sequence_notionals[wallet] = sorted(wallet_sequence_notionals[wallet])
+    for wallet in wallet_market_notionals:
+        wallet_market_notionals[wallet] = sorted(wallet_market_notionals[wallet])
 
 
-    return wallet_sequence_notionals, dict(sequence_notionals)
+    return wallet_market_notionals, dict(market_notionals)
 
 
-def get_wallet_sequence_median_notional(
+def get_wallet_market_median_notional(
     wallet,
     slug,
-    outcome,
-    wallet_sequence_notionals,
-    sequence_notional_lookup,
+    wallet_market_notionals,
+    market_notional_lookup,
 ):
     wallet = str(wallet or "").strip().lower()
     slug = str(slug or "").strip()
-    outcome = str(outcome or "").strip()
 
 
-    sorted_notionals = list(wallet_sequence_notionals.get(wallet, []))
+    sorted_notionals = list(wallet_market_notionals.get(wallet, []))
     if not sorted_notionals:
         return 0
 
 
-    current_sequence_notional = sequence_notional_lookup.get((wallet, slug, outcome))
+    current_market_notional = market_notional_lookup.get((wallet, slug))
 
 
     comparison_notionals = list(sorted_notionals)
-    if current_sequence_notional is not None and len(comparison_notionals) > 1:
+    if current_market_notional is not None and len(comparison_notionals) > 1:
         try:
-            comparison_notionals.remove(current_sequence_notional)
+            comparison_notionals.remove(current_market_notional)
         except ValueError:
             pass
 
@@ -1158,8 +1155,8 @@ def fetch_gamma_market_metadata(slug, outcome):
 def attach_position_data_and_score(
     groups,
     position_lookup,
-    wallet_sequence_notionals,
-    sequence_notional_lookup,
+    wallet_market_notionals,
+    market_notional_lookup,
     wallet_profiles,
     fair_price_lookup,
 ):
@@ -1173,14 +1170,18 @@ def attach_position_data_and_score(
         pos = position_lookup.get(key)
 
         wallet = g["wallet"]
+
         wallet_profile = wallet_profiles.get(wallet, {})
-        wallet_weight = float(wallet_profile.get("dynamic_weight", 1.0) or 1.0)
-        median_notional = get_wallet_sequence_median_notional(
+        raw_wallet_weight = float(wallet_profile.get("dynamic_weight", 1.0) or 1.0)
+
+        # softened wallet weighting so results matter without dominating the signal
+        wallet_weight = 1.0 + ((raw_wallet_weight - 1.0) * 0.5)
+
+        median_notional = get_wallet_market_median_notional(
             wallet,
             g.get("slug", ""),
-            g.get("outcome", ""),
-            wallet_sequence_notionals,
-            sequence_notional_lookup,
+            wallet_market_notionals,
+            market_notional_lookup,
         )
 
         avg_trade_size = g["total_size"] / max(g["buy_count"], 1)
@@ -1268,9 +1269,10 @@ def attach_position_data_and_score(
 
         conviction_points = min(size_points + absolute_size_points, 40)
 
-        # --- APPLY WALLET WEIGHTING ---
+        # --- APPLY WALLET WEIGHTING (SOFTENED) ---
         conviction_points = conviction_points * wallet_weight
-        conviction_points = min(conviction_points, 50)
+        conviction_points = min(conviction_points, 45)
+        conviction_points = round(conviction_points, 2)
 
         g = dict(g)
         g["size_ratio"] = round(size_ratio, 2)
@@ -1369,32 +1371,63 @@ def attach_position_data_and_score(
         max_price_drift_allowed = 0.025
         price_drift_tier = "strict"
 
-        if (
-            sequence_role in {"leader", "early"}
-            and signal_age_seconds <= 120
-            and size_ratio >= 0.60
-            and buy_count >= 4
-        ):
-            max_price_drift_allowed = 0.06
-            price_drift_tier = "elite"
-        elif (
-            sequence_role in {"leader", "early"}
-            and signal_age_seconds <= 240
-            and size_ratio >= 0.45
-            and buy_count >= 3
-        ):
-            max_price_drift_allowed = 0.05
-            price_drift_tier = "strong"
-        elif (
-            sequence_role in {"leader", "early"}
-            and signal_age_seconds <= 300
-            and size_ratio >= 0.30
-        ):
-            max_price_drift_allowed = 0.045
-            price_drift_tier = "moderate"
-        elif buy_count >= 3 and signal_age_seconds <= 240:
-            max_price_drift_allowed = 0.04
-            price_drift_tier = "moderate"
+        if is_live:
+            if (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 120
+                and size_ratio >= 0.60
+                and buy_count >= 4
+            ):
+                max_price_drift_allowed = 0.06
+                price_drift_tier = "elite"
+            elif (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 240
+                and size_ratio >= 0.45
+                and buy_count >= 3
+            ):
+                max_price_drift_allowed = 0.05
+                price_drift_tier = "strong"
+            elif (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 300
+                and size_ratio >= 0.30
+            ):
+                max_price_drift_allowed = 0.045
+                price_drift_tier = "moderate"
+            elif buy_count >= 3 and signal_age_seconds <= 240:
+                max_price_drift_allowed = 0.04
+                price_drift_tier = "moderate"
+        else:
+            if (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 300
+                and size_ratio >= 1.50
+                and buy_count >= 4
+            ):
+                max_price_drift_allowed = 0.12
+                price_drift_tier = "pregame_elite"
+            elif (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 600
+                and size_ratio >= 1.00
+                and buy_count >= 3
+            ):
+                max_price_drift_allowed = 0.10
+                price_drift_tier = "pregame_strong"
+            elif (
+                sequence_role in {"leader", "early"}
+                and signal_age_seconds <= 1200
+                and size_ratio >= 0.60
+            ):
+                max_price_drift_allowed = 0.08
+                price_drift_tier = "pregame_moderate"
+            elif buy_count >= 3 and signal_age_seconds <= 1200:
+                max_price_drift_allowed = 0.08
+                price_drift_tier = "pregame_moderate"
+            elif signal_age_seconds <= 1800:
+                max_price_drift_allowed = 0.06
+                price_drift_tier = "pregame_light"
 
         g["max_price_drift_allowed"] = round(max_price_drift_allowed, 4)
         g["price_drift_tier"] = price_drift_tier
@@ -5150,7 +5183,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     )
     valid_buy_trades = filter_valid_buy_trades(recent_trades)
 
-    wallet_sequence_notionals, sequence_notional_lookup = compute_wallet_sequence_baselines(valid_buy_trades)
+    wallet_market_notionals, market_notional_lookup = compute_wallet_market_baselines(valid_buy_trades)
 
     accumulation_groups = group_accumulation_candidates(valid_buy_trades)
     accumulation_groups = mark_recent_paired_activity(accumulation_groups)
@@ -5200,8 +5233,8 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     scored_candidates = attach_position_data_and_score(
         real_candidates,
         position_lookup,
-        wallet_sequence_notionals,
-        sequence_notional_lookup,
+        wallet_market_notionals,
+        market_notional_lookup,
         wallet_profiles,
         fair_price_lookup
     )
