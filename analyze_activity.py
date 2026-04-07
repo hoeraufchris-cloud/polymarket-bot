@@ -1368,66 +1368,37 @@ def attach_position_data_and_score(
         buy_count = int(g.get("buy_count", 0) or 0)
         signal_age_seconds = int(time_since_last_buy or 999999)
 
+        # is_live has not been assigned yet at this point in the function,
+        # so drift logic here must stay phase-agnostic.
         max_price_drift_allowed = 0.025
         price_drift_tier = "strict"
 
-        if is_live:
-            if (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 120
-                and size_ratio >= 0.60
-                and buy_count >= 4
-            ):
-                max_price_drift_allowed = 0.06
-                price_drift_tier = "elite"
-            elif (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 240
-                and size_ratio >= 0.45
-                and buy_count >= 3
-            ):
-                max_price_drift_allowed = 0.05
-                price_drift_tier = "strong"
-            elif (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 300
-                and size_ratio >= 0.30
-            ):
-                max_price_drift_allowed = 0.045
-                price_drift_tier = "moderate"
-            elif buy_count >= 3 and signal_age_seconds <= 240:
-                max_price_drift_allowed = 0.04
-                price_drift_tier = "moderate"
-        else:
-            if (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 300
-                and size_ratio >= 1.50
-                and buy_count >= 4
-            ):
-                max_price_drift_allowed = 0.12
-                price_drift_tier = "pregame_elite"
-            elif (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 600
-                and size_ratio >= 1.00
-                and buy_count >= 3
-            ):
-                max_price_drift_allowed = 0.10
-                price_drift_tier = "pregame_strong"
-            elif (
-                sequence_role in {"leader", "early"}
-                and signal_age_seconds <= 1200
-                and size_ratio >= 0.60
-            ):
-                max_price_drift_allowed = 0.08
-                price_drift_tier = "pregame_moderate"
-            elif buy_count >= 3 and signal_age_seconds <= 1200:
-                max_price_drift_allowed = 0.08
-                price_drift_tier = "pregame_moderate"
-            elif signal_age_seconds <= 1800:
-                max_price_drift_allowed = 0.06
-                price_drift_tier = "pregame_light"
+        if (
+            sequence_role in {"leader", "early"}
+            and signal_age_seconds <= 120
+            and size_ratio >= 0.60
+            and buy_count >= 4
+        ):
+            max_price_drift_allowed = 0.06
+            price_drift_tier = "elite"
+        elif (
+            sequence_role in {"leader", "early"}
+            and signal_age_seconds <= 240
+            and size_ratio >= 0.45
+            and buy_count >= 3
+        ):
+            max_price_drift_allowed = 0.05
+            price_drift_tier = "strong"
+        elif (
+            sequence_role in {"leader", "early"}
+            and signal_age_seconds <= 300
+            and size_ratio >= 0.30
+        ):
+            max_price_drift_allowed = 0.045
+            price_drift_tier = "moderate"
+        elif buy_count >= 3 and signal_age_seconds <= 240:
+            max_price_drift_allowed = 0.04
+            price_drift_tier = "moderate"
 
         g["max_price_drift_allowed"] = round(max_price_drift_allowed, 4)
         g["price_drift_tier"] = price_drift_tier
