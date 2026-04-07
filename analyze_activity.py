@@ -698,6 +698,7 @@ def build_position_lookup(positions):
 def init_wallet_profiles(tracked_wallets):
     profiles = {}
 
+
     for wallet in tracked_wallets:
         profiles[wallet] = {
             "wallet": wallet,
@@ -712,9 +713,15 @@ def init_wallet_profiles(tracked_wallets):
             "follower_count": 0,
             "paired_count": 0,
             "noise_count": 0,
+            "resolved_bets": 0,
+            "resolved_wins": 0,
+            "resolved_losses": 0,
+            "resolved_win_rate": None,
+            "results_confidence": 0.0,
             "confidence": 0.0,
             "dynamic_weight": 1.0,
         }
+
 
     return profiles
 
@@ -745,6 +752,11 @@ def update_wallet_profiles(wallet_profiles, accumulation_groups, scored_candidat
                 "follower_count": 0,
                 "paired_count": 0,
                 "noise_count": 0,
+                "resolved_bets": 0,
+                "resolved_wins": 0,
+                "resolved_losses": 0,
+                "resolved_win_rate": None,
+                "results_confidence": 0.0,
                 "confidence": 0.0,
                 "dynamic_weight": 1.0,
             }
@@ -801,6 +813,88 @@ def update_wallet_profiles(wallet_profiles, accumulation_groups, scored_candidat
 
     return wallet_profiles
 
+def apply_tracked_results_to_wallet_profiles(wallet_profiles):
+    try:
+        with open(TRACKED_BETS_PATH, "r") as f:
+            tracked_bets = json.load(f)
+    except Exception:
+        tracked_bets = []
+
+
+    for wallet in wallet_profiles:
+        wallet_profiles[wallet]["resolved_bets"] = 0
+        wallet_profiles[wallet]["resolved_wins"] = 0
+        wallet_profiles[wallet]["resolved_losses"] = 0
+        wallet_profiles[wallet]["resolved_win_rate"] = None
+        wallet_profiles[wallet]["results_confidence"] = 0.0
+
+
+    for row in tracked_bets:
+        if not isinstance(row, dict):
+            continue
+
+
+        wallet = str(row.get("wallet", "") or "").strip().lower()
+        if not wallet:
+            continue
+
+
+        if wallet not in wallet_profiles:
+            wallet_profiles[wallet] = {
+                "wallet": wallet,
+                "evaluated_trades": 0,
+                "evaluated_clusters": 0,
+                "clv_observations": 0,
+                "positive_clv_count": 0,
+                "avg_forward_clv": 0.0,
+                "positive_clv_rate": 0.0,
+                "leader_count": 0,
+                "early_count": 0,
+                "follower_count": 0,
+                "paired_count": 0,
+                "noise_count": 0,
+                "resolved_bets": 0,
+                "resolved_wins": 0,
+                "resolved_losses": 0,
+                "resolved_win_rate": None,
+                "results_confidence": 0.0,
+                "confidence": 0.0,
+                "dynamic_weight": 1.0,
+            }
+
+
+        resolved = row.get("resolved")
+        won = row.get("won")
+
+
+        if not resolved:
+            continue
+
+
+        wallet_profiles[wallet]["resolved_bets"] += 1
+
+
+        if won is True:
+            wallet_profiles[wallet]["resolved_wins"] += 1
+        elif won is False:
+            wallet_profiles[wallet]["resolved_losses"] += 1
+
+
+    for wallet, profile in wallet_profiles.items():
+        resolved_bets = int(profile.get("resolved_bets", 0) or 0)
+        resolved_wins = int(profile.get("resolved_wins", 0) or 0)
+
+
+        if resolved_bets > 0:
+            profile["resolved_win_rate"] = round(resolved_wins / resolved_bets, 4)
+        else:
+            profile["resolved_win_rate"] = None
+
+
+        profile["results_confidence"] = round(min(1.0, resolved_bets / 20.0), 4)
+
+
+    return wallet_profiles
 
 def filter_active_wallets(wallet_profiles):
     filtered = []
@@ -868,11 +962,21 @@ def compute_dynamic_wallet_weights(wallet_profiles):
         if not isinstance(profile, dict):
             continue
 
+
         evaluated_trades = int(profile.get("evaluated_trades", 0) or 0)
+        clv_observations = int(profile.get("clv_observations", 0) or 0)
         avg_forward_clv = float(profile.get("avg_forward_clv", 0.0) or 0.0)
         positive_clv_rate = float(profile.get("positive_clv_rate", 0.0) or 0.0)
         noise_count = int(profile.get("noise_count", 0) or 0)
 
+        resolved_bets = int(profile.get("resolved_bets", 0) or 0)
+        resolved_win_rate = profile.get("resolved_win_rate")
+        results_confidence = float(profile.get("results_confidence", 0.0) or 0.0)
+
+        if resolved_win_rate is None:
+            resolved_win_rate = 0.5
+
+        # --- CLV / behavior component ---
         clv_boost = avg_forward_clv / 2.0
         consistency_boost = positive_clv_rate - 0.5
         noise_penalty = min(0.3, noise_count / max(evaluated_trades * 2, 1))
@@ -900,14 +1004,37 @@ def compute_dynamic_wallet_weights(wallet_profiles):
                 (follower_rate * 0.2)
             )
 
-        raw_score = 1.0 + clv_boost + consistency_boost + role_score - noise_penalty
-        confidence = min(1.0, (evaluated_trades + profile.get("clv_observations", 0)) / 30.0)
+        behavior_raw_score = 1.0 + clv_boost + consistency_boost + role_score - noise_penalty
+        behavior_confidence = min(1.0, (evaluated_trades + clv_observations) / 30.0)
+        behavior_weight = 1.0 + ((behavior_raw_score - 1.0) * behavior_confidence)
 
-        dynamic_weight = 1.0 + ((raw_score - 1.0) * confidence)
-        dynamic_weight = max(0.75, min(1.5, dynamic_weight))
+        # --- tracked results component ---
+        # shrink small samples toward 50%
+        shrunk_win_rate = ((resolved_win_rate * resolved_bets) + (0.5 * 10)) / max(resolved_bets + 10, 1)
+        win_rate_edge = shrunk_win_rate - 0.5
 
-        profile["confidence"] = round(confidence, 4)
+        # cap results-only effect to keep it from dominating
+        results_weight = 1.0 + (win_rate_edge * 1.2 * results_confidence)
+
+        # --- blend both components ---
+        blended_weight = (
+            (behavior_weight * 0.45) +
+            (results_weight * 0.55)
+        )
+
+        # additional mild penalty for clearly poor real results with usable sample
+        if resolved_bets >= 7 and resolved_win_rate <= 0.35:
+            blended_weight -= 0.08
+
+        # additional mild boost for clearly strong real results with usable sample
+        if resolved_bets >= 7 and resolved_win_rate >= 0.65:
+            blended_weight += 0.08
+
+        dynamic_weight = max(0.80, min(1.35, blended_weight))
+
+        profile["confidence"] = round(behavior_confidence, 4)
         profile["dynamic_weight"] = round(dynamic_weight, 4)
+
 
     return wallet_profiles
 
@@ -1046,6 +1173,8 @@ def attach_position_data_and_score(
         pos = position_lookup.get(key)
 
         wallet = g["wallet"]
+        wallet_profile = wallet_profiles.get(wallet, {})
+        wallet_weight = float(wallet_profile.get("dynamic_weight", 1.0) or 1.0)
         median_notional = get_wallet_sequence_median_notional(
             wallet,
             g.get("slug", ""),
@@ -1138,6 +1267,10 @@ def attach_position_data_and_score(
             absolute_size_points = 0
 
         conviction_points = min(size_points + absolute_size_points, 40)
+
+        # --- APPLY WALLET WEIGHTING ---
+        conviction_points = conviction_points * wallet_weight
+        conviction_points = min(conviction_points, 50)
 
         g = dict(g)
         g["size_ratio"] = round(size_ratio, 2)
@@ -1733,7 +1866,58 @@ def attach_position_data_and_score(
                 else:
                     min_edge = -2.0
 
-                if edge_pct < min_edge:
+                hard_negative_edge_block = -0.5 if current_price < 0.65 else 0.0
+
+                if edge_pct < hard_negative_edge_block:
+                    g["label"] = "PASS"
+                    g["score"] = 0
+                    g["stake_pct"] = 0
+                    g["reason"] = (
+                        f"Final filter: blocked negative edge for BET "
+                        f"(edge={round(edge_pct, 2)}%, block={hard_negative_edge_block}%, price={round(current_price, 3)})"
+                    )
+
+                elif (
+                    not is_live
+                    and age_bucket == "dead"
+                ):
+                    g["label"] = "PASS"
+                    g["score"] = 0
+                    g["stake_pct"] = 0
+                    g["reason"] = (
+                        f"Final filter: blocked stale BET "
+                        f"(age={age_bucket}, last_buy={int(time_since_last_buy)}s)"
+                    )
+
+                elif (
+                    not is_live
+                    and age_bucket in {"very old", "dead"}
+                    and not consensus_upgrade
+                    and confirmation_count < 3
+                ):
+                    g["label"] = "PASS"
+                    g["score"] = 0
+                    g["stake_pct"] = 0
+                    g["reason"] = (
+                        f"Final filter: blocked stale low-confirmation BET "
+                        f"(age={age_bucket}, confirmations={confirmation_count})"
+                    )
+
+                elif (
+                    not is_live
+                    and age_bucket == "old"
+                    and edge_pct < 0
+                    and not consensus_upgrade
+                ):
+                    g["label"] = "PASS"
+                    g["score"] = 0
+                    g["stake_pct"] = 0
+                    g["reason"] = (
+                        f"Final filter: blocked old BET with non-positive edge "
+                        f"(age={age_bucket}, edge={round(edge_pct, 2)}%)"
+                    )
+
+                elif edge_pct < min_edge:
                     g["label"] = "PASS"
                     g["score"] = 0
                     g["stake_pct"] = 0
@@ -1793,6 +1977,62 @@ def attach_position_data_and_score(
                         f"size_ratio={round(float(g.get('size_ratio', 0) or 0), 2)}, "
                         f"movement={round(abs(float(g.get('market_movement_cents', 0) or 0)), 2)}c)"
                     )
+
+        if g.get("label") == "LEAN":
+            lean_edge_pct = float(g.get("edge_pct", 0) or 0)
+            lean_size_ratio = float(g.get("size_ratio", 0) or 0)
+            lean_conviction = int(g.get("conviction_points", 0) or 0)
+            lean_buy_count = int(g.get("buy_count", 0) or 0)
+            lean_stake_pct = int(g.get("stake_pct", 0) or 0)
+            lean_age_bucket = str(g.get("age_bucket", "") or "").lower()
+            lean_time_since_last_buy = int(g.get("seconds_since_last_buy", 999999) or 999999)
+            lean_market_movement_cents = abs(float(g.get("market_movement_cents", 0) or 0))
+            lean_consensus_upgrade = bool(g.get("consensus_upgrade", False))
+
+            g["lean_alert_eligible"] = False
+            g["lean_alert_reason"] = None
+
+            # --- dynamic drift threshold ---
+            if is_live:
+                max_drift = 3.0
+            else:
+                max_drift = 8.0  # allow more flexibility pregame
+
+            if (
+                not is_live
+                and lean_edge_pct >= -0.25
+                and lean_age_bucket in {"fresh", "slightly stale", "stale", "old"}
+                and lean_time_since_last_buy <= 1200
+                and lean_market_movement_cents <= max_drift
+                and (
+                    lean_conviction >= 14
+                    or lean_size_ratio >= 2.0
+                    or (
+                        lean_buy_count >= 8
+                        and lean_size_ratio >= 1.5
+                    )
+                )
+            ):
+                g["lean_alert_eligible"] = True
+                g["lean_alert_reason"] = (
+                    f"High-quality LEAN "
+                    f"(edge={round(lean_edge_pct, 2)}%, "
+                    f"age={lean_age_bucket}, "
+                    f"size_ratio={round(lean_size_ratio, 2)}, "
+                    f"conviction={lean_conviction}, "
+                    f"stake={lean_stake_pct}%)"
+                )
+
+                if lean_stake_pct > 80:
+                    g["stake_pct"] = 80
+
+            if lean_age_bucket in {"very old", "dead"}:
+                g["lean_alert_eligible"] = False
+                g["lean_alert_reason"] = "LEAN blocked: too stale"
+
+            if lean_edge_pct < -0.25:
+                g["lean_alert_eligible"] = False
+                g["lean_alert_reason"] = "LEAN blocked: negative edge"
 
         scored.append(g)
 
@@ -4954,11 +5194,8 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
 
     position_lookup = build_position_lookup(positions)
     fair_price_lookup = build_fair_price_lookup(accumulation_groups)
+    wallet_profiles = apply_tracked_results_to_wallet_profiles(wallet_profiles)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
-    wallet_profiles = apply_tracked_bet_wallet_scores(
-        wallet_profiles,
-        wallet_result_rows,
-    )
 
     scored_candidates = attach_position_data_and_score(
         real_candidates,
@@ -4991,11 +5228,8 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         scored_candidates
     )
 
+    wallet_profiles = apply_tracked_results_to_wallet_profiles(wallet_profiles)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
-    wallet_profiles = apply_tracked_bet_wallet_scores(
-        wallet_profiles,
-        wallet_result_rows,
-    )
 
     active_wallets = filter_active_wallets(wallet_profiles)
     gated_wallets = apply_wallet_stability_gating(wallet_profiles, active_wallets)

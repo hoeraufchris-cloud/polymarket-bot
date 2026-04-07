@@ -5,6 +5,34 @@ import os
 from collections import defaultdict
 from datetime import datetime, timezone
 
+def price_to_american_odds(p):
+    if p is None:
+        return "N/A"
+    try:
+        p = float(p)
+    except Exception:
+        return "N/A"
+
+    if p <= 0 or p >= 1:
+        return "N/A"
+
+    if p >= 0.5:
+        return int(round(-100 * p / (1 - p)))
+    else:
+        return int(round(100 * (1 - p) / p))
+
+def format_roi_pct(x):
+    try:
+        return f"{round(float(x) * 100, 2)}%"
+    except Exception:
+        return "N/A"
+
+
+def format_dollars(x):
+    try:
+        return f"${int(round(float(x))):,}"
+    except Exception:
+        return "N/A"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -762,10 +790,33 @@ def print_recommendations(recommendations, limit=25):
         print(f"Time bucket: {row.get('time_to_start_bucket', 'N/A')}")
         print(f"Unique wallets: {row.get('unique_wallet_count', 'N/A')}")
         print(f"Leader/Early/Follower: {row.get('leader_count', 0)}/{row.get('early_count', 0)}/{row.get('follower_count', 0)}")
-        print(f"Total notional: {row.get('total_notional', 'N/A')}")
-        print(f"Max size ratio: {row.get('max_size_ratio', 'N/A')}")
+        print(f"Total notional: {format_dollars(row.get('total_notional'))}")
+        print(f"Max size ratio: {round(row.get('max_size_ratio', 0), 2)}")
         print(f"Avg size ratio: {row.get('avg_size_ratio', 'N/A')}")
-        print(f"Avg leaderboard ROI: {row.get('avg_leaderboard_roi', 'N/A')}")
+        print(f"Avg leaderboard ROI: {format_roi_pct(row.get('avg_leaderboard_roi'))}")
+        print(f"Latest edge %: {row.get('latest_edge_pct')}")
+
+        sharp_entry_price = row.get("latest_wallet_entry_price")
+        current_price = row.get("latest_current_price")
+
+        try:
+            sharp_entry_price_float = float(sharp_entry_price) if sharp_entry_price is not None else None
+        except Exception:
+            sharp_entry_price_float = None
+
+        try:
+            current_price_float = float(current_price) if current_price is not None else None
+        except Exception:
+            current_price_float = None
+
+        sharp_entry_odds = price_to_american_odds(sharp_entry_price_float) if sharp_entry_price_float else "N/A"
+        current_odds = price_to_american_odds(current_price_float) if current_price_float else "N/A"
+
+        print(f"Sharp entry price: {sharp_entry_price_float if sharp_entry_price_float is not None else 'N/A'}")
+        print(f"Sharp entry odds: {sharp_entry_odds}")
+        print(f"Current price: {current_price_float if current_price_float is not None else 'N/A'}")
+        print(f"Current odds: {current_odds}")
+
         since_last_buy = row.get("since_last_buy_seconds")
         if since_last_buy is None:
             since_last_buy_display = "N/A"
@@ -775,8 +826,9 @@ def print_recommendations(recommendations, limit=25):
             except Exception:
                 since_last_buy_display = "N/A"
         print(f"Last sharp bet age (s): {since_last_buy_display}")
-        print(f"Max followers: {row.get('max_followers', 'N/A')}")
-        print(f"Max consensus score: {row.get('max_consensus_score', 'N/A')}")
+
+        print(f"Max followers: {row.get('max_followers')}")
+        print(f"Max consensus score: {row.get('max_consensus_score')}")
         print(f"Reasons: {', '.join(row.get('reasons', []))}")
 
 
