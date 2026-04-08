@@ -5888,28 +5888,6 @@ def send_pushover_bet_alert(g):
             f"{conflict_status}: already alerted on {g.get('opposite_outcome', 'N/A')}\n"
         )
 
-    score_display = "N/A"
-    try:
-        score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
-    except Exception:
-        score_display = "N/A"
-
-        wallet = g.get("wallet", "N/A")
-        wallet_record = format_wallet_record(wallet_profiles, wallet)
-
-        message = (
-            f"{phase_label} | {market_text}\n"
-            f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
-            f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
-            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-            f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
-            f"Followers: {followers_display}\n"
-            f"Start: {start_str}\n"
-            f"Last Bet Placed: {last_bet_str}\n"
-            f"Wallet Record: {wallet_record}\n"
-            f"Wallet: {wallet}"
-        )
-
     try:
         api_token = str(PUSHOVER_API_TOKEN).strip()
 
@@ -5940,6 +5918,37 @@ def send_pushover_bet_alert(g):
                 if validate_resp.status_code != 200:
                     continue
 
+                score_display = "N/A"
+                try:
+                    score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
+                except Exception:
+                    score_display = "N/A"
+
+                wallet = g.get("wallet", "N/A")
+                wallet_record = format_wallet_record(wallet_profiles, wallet)
+
+                if isinstance(wallet, str) and wallet.startswith("0x") and len(wallet) > 18:
+                    wallet_short = f"{wallet[:10]}...{wallet[-6:]}"
+                else:
+                    wallet_short = wallet
+
+                alert_body = (
+                    f"{phase_label} | {market_text}\n"
+                    f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
+                    f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
+                    f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
+                    f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
+                    f"Followers: {followers_display}\n"
+                    f"Start: {start_str}\n"
+                    f"Last Bet Placed: {last_bet_str}\n"
+                    f"Wallet: {wallet_short} | Record: {wallet_record}"
+                )
+
+                if len(alert_body) > 950:
+                    alert_body = alert_body[:947] + "..."
+
+                print("Pushover debug - final message length:", len(alert_body))
+
                 validate_json = validate_resp.json()
                 if validate_json.get("status") != 1:
                     continue
@@ -5950,7 +5959,7 @@ def send_pushover_bet_alert(g):
                         "token": api_token,
                         "user": user_key,
                         "title": title,
-                        "message": message,
+                        "message": alert_body,
                         "priority": PUSHOVER_PRIORITY,
                     },
                     timeout=10,
