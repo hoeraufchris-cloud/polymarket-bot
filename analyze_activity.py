@@ -893,19 +893,35 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
 
     return wallet_profiles
 
-def format_wallet_record(wallet_profiles, wallet):
+def format_wallet_record(wallet_result_rows, wallet):
     wallet = str(wallet or "").strip().lower()
-    profile = wallet_profiles.get(wallet, {})
 
-    wins = int(profile.get("resolved_wins", 0) or 0)
-    losses = int(profile.get("resolved_losses", 0) or 0)
-    total = wins + losses
+    if not isinstance(wallet_result_rows, list):
+        return "No tracked history"
 
-    if total <= 0:
-        return "N/A"
+    for row in wallet_result_rows:
+        if not isinstance(row, dict):
+            continue
 
-    win_pct = round((wins / total) * 100, 1)
-    return f"{wins}-{losses} ({win_pct}%)"
+        row_wallet = str(row.get("wallet", "") or "").strip().lower()
+        if row_wallet != wallet:
+            continue
+
+        wins = int(row.get("wins", 0) or 0)
+        losses = int(row.get("losses", 0) or 0)
+        resolved = int(row.get("resolved", 0) or 0)
+        tracked_bets = int(row.get("tracked_bets", 0) or 0)
+
+        if resolved > 0:
+            win_pct = round((wins / resolved) * 100, 1)
+            return f"{wins}-{losses} ({win_pct}%)"
+
+        if tracked_bets > 0:
+            return "Tracked - no resolved bets"
+
+        return "No tracked history"
+
+    return "No tracked history"
 
 def filter_active_wallets(wallet_profiles):
     filtered = []
@@ -3461,17 +3477,9 @@ def update_tracked_bet_results(tracked_bets, now_ts):
 
 
 def summarize_tracked_bets_by_wallet(tracked_bets):
-    summary = defaultdict(lambda: {
-        "wallet": "",
-        "tracked": 0,
-        "resolved": 0,
-        "wins": 0,
-        "losses": 0,
-        "avg_edge_pct_at_alert": 0.0,
-        "avg_instant_clv_cents_at_alert": 0.0,
-    })
+    wallet_map = {}
 
-    for _, row in tracked_bets.items():
+    for row in tracked_bets:
         if not isinstance(row, dict):
             continue
 
@@ -3479,59 +3487,72 @@ def summarize_tracked_bets_by_wallet(tracked_bets):
         if not wallet:
             continue
 
-        bucket = summary[wallet]
-        bucket["wallet"] = wallet
-        bucket["tracked"] += 1
+        if wallet not in wallet_map:
+            wallet_map[wallet] = {
+                "wallet": wallet,
+                "tracked_bets": 0,
+                "resolved": 0,
+                "wins": 0,
+                "losses": 0,
+                "win_rate_pct": "N/A",
+                "avg_edge_pct_at_alert": "N/A",
+                "avg_instant_clv_cents_at_alert": "N/A",
+            }
 
-        try:
-            edge_pct_at_alert = float(row.get("edge_pct_at_alert", 0) or 0)
-        except Exception:
-            edge_pct_at_alert = 0.0
+        entry = wallet_map[wallet]
+        entry["tracked_bets"] += 1
 
-        try:
-            instant_clv_cents_at_alert = float(row.get("instant_clv_cents_at_alert", 0) or 0)
-        except Exception:
-            instant_clv_cents_at_alert = 0.0
+        resolved = bool(row.get("resolved"))
+        won = row.get("won")
 
-        old_n = bucket["tracked"] - 1
-        new_n = bucket["tracked"]
+        if resolved:
+            entry["resolved"] += 1
+            if won is True:
+                entry["wins"] += 1
+            elif won is False:
+                entry["losses"] += 1
 
-        bucket["avg_edge_pct_at_alert"] = round(
-            ((bucket["avg_edge_pct_at_alert"] * old_n) + edge_pct_at_alert) / max(new_n, 1),
-            2,
-        )
-        bucket["avg_instant_clv_cents_at_alert"] = round(
-            ((bucket["avg_instant_clv_cents_at_alert"] * old_n) + instant_clv_cents_at_alert) / max(new_n, 1),
-            2,
-        )
+    for wallet, entry in wallet_map.items():
+        resolved = int(entry.get("resolved", 0) or 0)
+        wins = int(entry.get("wins", 0) or 0)
 
-        if row.get("resolved"):
-            bucket["resolved"] += 1
-            if row.get("result") == "WIN":
-                bucket["wins"] += 1
-            elif row.get("result") == "LOSS":
-                bucket["losses"] += 1
+        if resolved > 0:
+            entry["win_rate_pct"] = round((wins / resolved) * 100, 1)
 
-    summary_rows = list(summary.values())
+        edge_values = []
+        clv_values = []
 
-    for row in summary_rows:
-        resolved_count = int(row.get("resolved", 0) or 0)
-        wins_count = int(row.get("wins", 0) or 0)
-        if resolved_count > 0:
-            row["win_rate_pct"] = round((wins_count / resolved_count) * 100, 1)
-        else:
-            row["win_rate_pct"] = None
+        for row in tracked_bets:
+            if not isinstance(row, dict):
+                continue
 
-    summary_rows.sort(
-        key=lambda x: (
-            int(x.get("resolved", 0) or 0),
-            int(x.get("wins", 0) or 0),
-            float(x.get("avg_edge_pct_at_alert", 0) or 0),
-        ),
-        reverse=True,
-    )
+            row_wallet = str(row.get("wallet", "") or "").strip().lower()
+            if row_wallet != wallet:
+                continue
 
-    return summary_rows
+            edge_val = row.get("edge_pct_at_alert")
+            if edge_val is not None:
+                try:
+                    edge_values.append(float(edge_val))
+                except Exception:
+                    pass
+
+            clv_val = row.get("instant_clv_cents_at_alert")
+            if clv_val is not None:
+                try:
+                    clv_values.append(float(clv_val))
+                except Exception:
+                    pass
+
+        if edge_values:
+            entry["avg_edge_pct_at_alert"] = round(sum(edge_values) / len(edge_values), 2)
+
+        if clv_values:
+            entry["avg_instant_clv_cents_at_alert"] = round(sum(clv_values) / len(clv_values), 2)
+
+    rows = list(wallet_map.values())
+    rows.sort(key=lambda x: (-int(x.get("tracked_bets", 0) or 0), x.get("wallet", "")))
+    return rows
 
 def apply_tracked_bet_wallet_scores(wallet_profiles, wallet_result_rows):
     if not isinstance(wallet_profiles, dict):
@@ -5925,7 +5946,7 @@ def send_pushover_bet_alert(g):
                     score_display = "N/A"
 
                 wallet = g.get("wallet", "N/A")
-                wallet_record = format_wallet_record(wallet_profiles, wallet)
+                wallet_record = format_wallet_record(wallet_result_rows, wallet)
 
                 if isinstance(wallet, str) and wallet.startswith("0x") and len(wallet) > 18:
                     wallet_short = f"{wallet[:10]}...{wallet[-6:]}"
@@ -6239,10 +6260,19 @@ if __name__ == "__main__":
                 print(f"Paired count: {profile['paired_count']}")
                 print(f"Noise count: {profile['noise_count']}")
                 print(f"Confidence: {profile['confidence']}")
-                print(f"Tracked bet resolved: {profile.get('tracked_bet_resolved', 0)}")
-                print(f"Tracked bet win rate %: {profile.get('tracked_bet_win_rate_pct', 'N/A')}")
-                print(f"Tracked bet score: {profile.get('tracked_bet_score', 'N/A')}")
-                print(f"Dynamic weight: {profile['dynamic_weight']}")
+                resolved_bets_display = profile.get("resolved_bets", 0)
+                resolved_win_rate_display = profile.get("resolved_win_rate", None)
+                results_confidence_display = profile.get("results_confidence", 0.0)
+
+                if resolved_win_rate_display is None:
+                    resolved_win_rate_str = "N/A"
+                else:
+                    resolved_win_rate_str = round(float(resolved_win_rate_display) * 100, 1)
+
+                print(f"Tracked bet resolved: {resolved_bets_display}")
+                print(f"Tracked bet win rate %: {resolved_win_rate_str}")
+                print(f"Tracked bet results confidence: {results_confidence_display}")
+                print(f"Dynamic weight: {profile.get('dynamic_weight', 1.0)}")
             print("=" * 80)
 
             raw_bet_candidates = [
