@@ -817,6 +817,11 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
     except Exception:
         tracked_bets = []
 
+    if isinstance(tracked_bets, dict):
+        tracked_bets = list(tracked_bets.values())
+    elif not isinstance(tracked_bets, list):
+        tracked_bets = []
+
 
     for wallet in wallet_profiles:
         wallet_profiles[wallet]["resolved_bets"] = 0
@@ -860,8 +865,9 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
             }
 
 
-        resolved = row.get("resolved")
+        resolved = bool(row.get("resolved"))
         won = row.get("won")
+        result = str(row.get("result", "") or "").strip().upper()
 
 
         if not resolved:
@@ -871,9 +877,9 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
         wallet_profiles[wallet]["resolved_bets"] += 1
 
 
-        if won is True:
+        if won is True or result == "WIN":
             wallet_profiles[wallet]["resolved_wins"] += 1
-        elif won is False:
+        elif won is False or result == "LOSS":
             wallet_profiles[wallet]["resolved_losses"] += 1
 
 
@@ -883,7 +889,7 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
 
 
         if resolved_bets > 0:
-            profile["resolved_win_rate"] = round(resolved_wins / resolved_bets, 4)
+            profile["resolved_win_rate"] = round((resolved_wins / resolved_bets) * 100, 1)
         else:
             profile["resolved_win_rate"] = None
 
@@ -3477,6 +3483,11 @@ def update_tracked_bet_results(tracked_bets, now_ts):
 
 
 def summarize_tracked_bets_by_wallet(tracked_bets):
+    if isinstance(tracked_bets, dict):
+        tracked_bets = list(tracked_bets.values())
+    elif not isinstance(tracked_bets, list):
+        tracked_bets = []
+
     wallet_map = {}
 
     for row in tracked_bets:
@@ -3504,12 +3515,13 @@ def summarize_tracked_bets_by_wallet(tracked_bets):
 
         resolved = bool(row.get("resolved"))
         won = row.get("won")
+        result = str(row.get("result", "") or "").strip().upper()
 
         if resolved:
             entry["resolved"] += 1
-            if won is True:
+            if won is True or result == "WIN":
                 entry["wins"] += 1
-            elif won is False:
+            elif won is False or result == "LOSS":
                 entry["losses"] += 1
 
     for wallet, entry in wallet_map.items():
@@ -3551,7 +3563,13 @@ def summarize_tracked_bets_by_wallet(tracked_bets):
             entry["avg_instant_clv_cents_at_alert"] = round(sum(clv_values) / len(clv_values), 2)
 
     rows = list(wallet_map.values())
-    rows.sort(key=lambda x: (-int(x.get("tracked_bets", 0) or 0), x.get("wallet", "")))
+    rows.sort(
+        key=lambda x: (
+            -int(x.get("resolved", 0) or 0),
+            -int(x.get("tracked_bets", 0) or 0),
+            x.get("wallet", ""),
+        )
+    )
     return rows
 
 def apply_tracked_bet_wallet_scores(wallet_profiles, wallet_result_rows):
@@ -6264,10 +6282,12 @@ if __name__ == "__main__":
                 resolved_win_rate_display = profile.get("resolved_win_rate", None)
                 results_confidence_display = profile.get("results_confidence", 0.0)
 
+
                 if resolved_win_rate_display is None:
                     resolved_win_rate_str = "N/A"
                 else:
-                    resolved_win_rate_str = round(float(resolved_win_rate_display) * 100, 1)
+                    resolved_win_rate_str = round(float(resolved_win_rate_display), 1)
+
 
                 print(f"Tracked bet resolved: {resolved_bets_display}")
                 print(f"Tracked bet win rate %: {resolved_win_rate_str}")
@@ -6679,14 +6699,14 @@ if __name__ == "__main__":
             if not wallet_result_rows:
                 print("No tracked bets by wallet yet.")
             else:
-                for row in wallet_result_rows[:15]:
+                for row in wallet_result_rows:
                     print("-" * 80)
                     print(f"Wallet: {row['wallet']}")
-                    print(f"Tracked bets: {row['tracked']}")
+                    print(f"Tracked bets: {row['tracked_bets']}")
                     print(f"Resolved bets: {row['resolved']}")
                     print(f"Wins: {row['wins']}")
                     print(f"Losses: {row['losses']}")
-                    print(f"Win rate: {row.get('win_rate_pct', 'N/A')}")
+                    print(f"Win rate: {row['win_rate_pct']}")
                     print(f"Avg edge at alert: {row['avg_edge_pct_at_alert']}")
                     print(f"Avg instant CLV at alert: {row['avg_instant_clv_cents_at_alert']}")
                 print("-" * 80)
