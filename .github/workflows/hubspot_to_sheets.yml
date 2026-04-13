@@ -19,18 +19,20 @@ jobs:
       GOOGLE_WORKSHEET_NAME: ${{ secrets.GOOGLE_WORKSHEET_NAME }}
       GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
 
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
+
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
 
       - name: DEBUG SHOW WORKSPACE
         run: |
-          echo "PWD:"
+          echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           pwd
-          echo "FILES:"
           ls -la
-          echo "TOP FILES:"
-          find . -maxdepth 2 -type f | sort
+          find "$GITHUB_WORKSPACE" -maxdepth 2 -type f | sort
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -38,20 +40,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r requirements.txt
+        run: pip install -r "$GITHUB_WORKSPACE/requirements.txt"
 
       - name: Rebuild service account file
         run: |
-          cat <<'EOF' > service_account.json
+          cat <<'EOF' > "$GITHUB_WORKSPACE/service_account.json"
           ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           EOF
 
-      - name: DEBUG WHICH MAIN
-        run: |
-          pwd
-          ls -la
-          python --version
-          test -f ./main.py && echo "main.py exists" || echo "main.py missing"
-
       - name: Run script
-        run: python ./main.py
+        run: python "$GITHUB_WORKSPACE/main.py"
