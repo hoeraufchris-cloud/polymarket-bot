@@ -23,6 +23,15 @@ jobs:
       - name: Check out repo
         uses: actions/checkout@v4
 
+      - name: DEBUG SHOW WORKSPACE
+        run: |
+          echo "PWD:"
+          pwd
+          echo "FILES:"
+          ls -la
+          echo "TOP FILES:"
+          find . -maxdepth 2 -type f | sort
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -37,5 +46,12 @@ jobs:
           ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           EOF
 
+      - name: DEBUG WHICH MAIN
+        run: |
+          pwd
+          ls -la
+          python --version
+          test -f ./main.py && echo "main.py exists" || echo "main.py missing"
+
       - name: Run script
-        run: python main.py
+        run: python ./main.py
