@@ -19,20 +19,18 @@ jobs:
       GOOGLE_WORKSHEET_NAME: ${{ secrets.GOOGLE_WORKSHEET_NAME }}
       GOOGLE_SERVICE_ACCOUNT_FILE: service_account.json
 
-    defaults:
-      run:
-        working-directory: ${{ github.workspace }}
-
     steps:
       - name: Check out repo
         uses: actions/checkout@v4
+        with:
+          path: hubspot-to-sheets
 
       - name: DEBUG SHOW WORKSPACE
         run: |
           echo "GITHUB_WORKSPACE=$GITHUB_WORKSPACE"
           pwd
           ls -la
-          find "$GITHUB_WORKSPACE" -maxdepth 2 -type f | sort
+          ls -la "$GITHUB_WORKSPACE/hubspot-to-sheets"
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,13 +38,13 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install -r "$GITHUB_WORKSPACE/requirements.txt"
+        run: pip install -r "$GITHUB_WORKSPACE/hubspot-to-sheets/requirements.txt"
 
       - name: Rebuild service account file
         run: |
-          cat <<'EOF' > "$GITHUB_WORKSPACE/service_account.json"
+          cat <<'EOF' > "$GITHUB_WORKSPACE/hubspot-to-sheets/service_account.json"
           ${{ secrets.GOOGLE_SERVICE_ACCOUNT_JSON }}
           EOF
 
       - name: Run script
-        run: python "$GITHUB_WORKSPACE/main.py"
+        run: python "$GITHUB_WORKSPACE/hubspot-to-sheets/main.py"
