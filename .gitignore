@@ -2,3 +2,14 @@ __pycache__/
 *.pyc
 data/*.json
 *.pdf
+
+# Mac junk
+.DS_Store
+
+# Runtime / state files
+alerted_bets.json
+tracked_bets.txt
+
+# Exports
+*.csv
+*.xlsx
