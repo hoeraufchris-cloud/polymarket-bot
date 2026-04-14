@@ -1,4 +1,15 @@
 import json
+def log_alert(bet):
+    try:
+        with open("all_alerts.json", "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = []
+
+    data.append(bet)
+
+    with open("all_alerts.json", "w") as f:
+        json.dump(data, f)
 import time
 import requests
 import urllib.request
@@ -5945,12 +5956,22 @@ def send_pushover_bet_alert(g):
                 print("Pushover debug - user key preview:", f"{user_key[:4]}...{user_key[-4:]}")
 
                 validate_resp = requests.post(
-                    "https://api.pushover.net/1/users/validate.json",
+                    "https://api.pushover.net/1/messages.json",
                     data={
                         "token": api_token,
                         "user": user_key,
+                        "title": title,
+                        "message": alert_body,
+                        "priority": PUSHOVER_PRIORITY,
                     },
                     timeout=10,
+                )
+
+                # --- NEW: log every alert ---
+                try:
+                    log_alert(g)
+                except Exception as e:
+                    print(f"Alert logging failed: {e}"
                 )
                 print(f"Pushover validate response ({user_key[:4]}...{user_key[-4:]}):", validate_resp.status_code, validate_resp.text)
 
@@ -6005,11 +6026,18 @@ def send_pushover_bet_alert(g):
                 )
                 print(f"Pushover response ({user_key[:4]}...{user_key[-4:]}):", resp.status_code, resp.text)
 
+                if resp.status_code == 200:
+                    try:
+                        log_alert(g)
+                    except Exception as e:
+                        print(f"Alert logging failed: {e}")
+
             except Exception as inner_e:
                 print(f"Pushover send failed for {user_key[:4]}...{user_key[-4:]}: {inner_e}")
 
     except Exception as e:
         print(f"Pushover send failed: {e}")
+
 def print_signal(g):
     print("-" * 80)
     username = g.get("username", "")
