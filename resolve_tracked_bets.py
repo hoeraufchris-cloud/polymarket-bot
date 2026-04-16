@@ -1,6 +1,6 @@
 import json
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from urllib.parse import quote
 
 import requests
@@ -12,17 +12,17 @@ SLEEP_BETWEEN_CALLS = 0.08
 
 
 def load_tracked_bets():
-    with open(INPUT_FILE, "r") as f:
+    with open(INPUT_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
     if not isinstance(data, dict):
-        raise ValueError("tracked_bets.txt must contain a top-level JSON object.")
+        raise ValueError("tracked_bets.json must contain a top-level JSON object.")
 
     return data
 
 
 def save_tracked_bets(data):
-    with open(INPUT_FILE, "w") as f:
+    with open(INPUT_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2, sort_keys=True)
 
 
@@ -31,18 +31,40 @@ def parse_iso_to_ts(value):
         return None
 
     try:
-        return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
     except Exception:
         return None
 
 
+def safe_json_loads(value):
+    if isinstance(value, (dict, list)):
+        return value
+
+    if not isinstance(value, str):
+        return None
+
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+
+def normalize_outcome_name(value):
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+    text = text.replace("’", "'")
+    text = " ".join(text.split())
+    return text
+
+
 def fetch_market_by_slug(slug):
     """
-    Tries both documented slug endpoints because Polymarket has returned
-    slightly different shapes depending on endpoint/version.
+    Try a few public Gamma endpoints because response shapes vary.
+    Returns a single market dict when found, else None.
     """
     encoded_slug = quote(slug, safe="")
-
     urls = [
         f"https://gamma-api.polymarket.com/markets/slug/{encoded_slug}",
         f"https://gamma-api.polymarket.com/markets?slug={encoded_slug}",
@@ -56,23 +78,26 @@ def fetch_market_by_slug(slug):
             resp.raise_for_status()
             payload = resp.json()
 
-            # Endpoint 1: direct market object
-            if isinstance(payload, dict) and payload.get("slug") == slug:
-                return payload
-
-            # Endpoint 2: list response
-            if isinstance(payload, list) and payload:
-                for item in payload:
-                    if isinstance(item, dict) and item.get("slug") == slug:
-                        return item
-
-            # Sometimes wrapped
             if isinstance(payload, dict):
+                if payload.get("slug") == slug:
+                    return payload
+
                 markets = payload.get("markets")
                 if isinstance(markets, list):
                     for item in markets:
                         if isinstance(item, dict) and item.get("slug") == slug:
                             return item
+
+                data = payload.get("data")
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and item.get("slug") == slug:
+                            return item
+
+            if isinstance(payload, list):
+                for item in payload:
+                    if isinstance(item, dict) and item.get("slug") == slug:
+                        return item
 
         except Exception as e:
             last_error = e
@@ -83,10 +108,92 @@ def fetch_market_by_slug(slug):
     return None
 
 
-def normalize_outcome_name(value):
-    if value is None:
-        return None
-    return str(value).strip().lower()
+def extract_winning_outcome(market_data):
+    """
+    Try several fields Polymarket may expose for winner/resolution.
+    """
+    direct_fields = [
+        "winning_outcome",
+        "winningOutcome",
+        "winner",
+        "outcome",
+    ]
+
+    for field in direct_fields:
+        value = market_data.get(field)
+        if value not in (None, ""):
+            return value
+
+    outcome_prices = safe_json_loads(market_data.get("outcomePrices"))
+    outcomes = safe_json_loads(market_data.get("outcomes"))
+
+    if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+        try:
+            numeric_prices = [float(x) for x in outcome_prices]
+            max_idx = max(range(len(numeric_prices)), key=lambda i: numeric_prices[i])
+            if numeric_prices[max_idx] >= 0.999:
+                return outcomes[max_idx]
+        except Exception:
+            pass
+
+    return None
+
+
+def extract_resolution_price(market_data, winning_outcome):
+    """
+    Best-effort resolution price extraction.
+    """
+    direct_fields = [
+        "resolution",
+        "resolution_price",
+        "resolutionPrice",
+        "settlement_price",
+        "settlementPrice",
+    ]
+
+    for field in direct_fields:
+        value = market_data.get(field)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except Exception:
+                return value
+
+    outcome_prices = safe_json_loads(market_data.get("outcomePrices"))
+    outcomes = safe_json_loads(market_data.get("outcomes"))
+
+    winning_norm = normalize_outcome_name(winning_outcome)
+
+    if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+        for outcome, price in zip(outcomes, outcome_prices):
+            if normalize_outcome_name(outcome) == winning_norm:
+                try:
+                    return float(price)
+                except Exception:
+                    return price
+
+    return None
+
+
+def is_market_closed(market_data):
+    closed_fields = [
+        "closed",
+        "resolved",
+        "archived",
+        "isResolved",
+        "isClosed",
+    ]
+
+    for field in closed_fields:
+        value = market_data.get(field)
+        if isinstance(value, bool) and value:
+            return True
+
+    winning_outcome = extract_winning_outcome(market_data)
+    if winning_outcome not in (None, ""):
+        return True
+
+    return False
 
 
 def choose_result(bet, market_data):
@@ -101,17 +208,20 @@ def choose_result(bet, market_data):
     if not isinstance(market_data, dict):
         return False, None, None, None, None
 
-    closed = bool(market_data.get("closed"))
-    winning_outcome = market_data.get("winning_outcome")
-    resolution_price = market_data.get("resolution")
+    winning_outcome = extract_winning_outcome(market_data)
+    resolution_price = extract_resolution_price(market_data, winning_outcome)
+
     resolved_ts = (
         parse_iso_to_ts(market_data.get("closedTime"))
         or parse_iso_to_ts(market_data.get("endDate"))
         or parse_iso_to_ts(market_data.get("gameStartTime"))
         or parse_iso_to_ts(market_data.get("endDateIso"))
+        or parse_iso_to_ts(market_data.get("resolveTime"))
+        or parse_iso_to_ts(market_data.get("resolvedTime"))
     )
 
-    # If market isn't closed, do not mark resolved
+    closed = is_market_closed(market_data)
+
     if not closed:
         return False, None, winning_outcome, resolution_price, resolved_ts
 
@@ -120,28 +230,11 @@ def choose_result(bet, market_data):
     )
     winning_norm = normalize_outcome_name(winning_outcome)
 
-    # Straight winner match
     if winning_norm and bet_outcome:
         result = "WIN" if bet_outcome == winning_norm else "LOSS"
         return True, result, winning_outcome, resolution_price, resolved_ts
 
-    # Fallback for binary yes/no-style markets
-    outcomes_raw = market_data.get("outcomes")
-    if isinstance(outcomes_raw, str):
-        try:
-            outcomes_raw = json.loads(outcomes_raw)
-        except Exception:
-            outcomes_raw = None
-
-    outcome_prices_raw = market_data.get("outcomePrices")
-    if isinstance(outcome_prices_raw, str):
-        try:
-            outcome_prices_raw = json.loads(outcome_prices_raw)
-        except Exception:
-            outcome_prices_raw = None
-
-    # If there are exactly two outcomes and a resolution price of 1 or 0,
-    # infer the winner from the first/second side.
+    outcomes_raw = safe_json_loads(market_data.get("outcomes"))
     if (
         isinstance(outcomes_raw, list)
         and len(outcomes_raw) == 2
@@ -149,6 +242,7 @@ def choose_result(bet, market_data):
     ):
         try:
             resolution_float = float(resolution_price)
+
             if resolution_float == 1.0:
                 inferred_winner = outcomes_raw[0]
             elif resolution_float == 0.0:
@@ -163,13 +257,12 @@ def choose_result(bet, market_data):
         except Exception:
             pass
 
-    # Market closed, but could not determine winner cleanly
     return True, None, winning_outcome, resolution_price, resolved_ts
 
 
 def iter_bets(data):
     """
-    tracked_bets.txt is a dict keyed like:
+    tracked_bets.json is a dict keyed like:
     "slug||outcome||wallet||timestamp": {...bet object...}
     """
     for key, bet in data.items():
@@ -182,8 +275,8 @@ def main():
 
     total = 0
     updated = 0
-    resolved = 0
-    unresolved = 0
+    resolved_count = 0
+    unresolved_count = 0
     failed = 0
 
     slug_cache = {}
@@ -211,7 +304,6 @@ def main():
                 bet, market_data
             )
 
-            # Always backfill useful resolution fields when available
             bet["resolved"] = bool(is_resolved)
             bet["result"] = result
             bet["winning_outcome"] = winning_outcome
@@ -221,29 +313,51 @@ def main():
             updated += 1
 
             if is_resolved:
-                resolved += 1
+                resolved_count += 1
             else:
-                unresolved += 1
+                unresolved_count += 1
 
         except Exception:
             failed += 1
 
         if total % 25 == 0:
             print(
-                f"Processed {total} bets – updated: {updated}, "
-                f"resolved: {resolved}, unresolved: {unresolved}, failed: {failed}"
+                f"Processed {total} bets - updated: {updated}, "
+                f"resolved: {resolved_count}, unresolved: {unresolved_count}, failed: {failed}"
             )
 
     save_tracked_bets(data)
 
-    print("\nRESOLUTION SUMMARY")
+    populated_result = sum(
+        1 for bet in data.values()
+        if isinstance(bet, dict) and bet.get("result") not in (None, "")
+    )
+    populated_winner = sum(
+        1 for bet in data.values()
+        if isinstance(bet, dict) and bet.get("winning_outcome") not in (None, "")
+    )
+    populated_resolution_price = sum(
+        1 for bet in data.values()
+        if isinstance(bet, dict) and bet.get("resolution_price") not in (None, "")
+    )
+    populated_resolved_ts = sum(
+        1 for bet in data.values()
+        if isinstance(bet, dict) and bet.get("resolved_ts") not in (None, "")
+    )
+
+    print("")
+    print("RESOLUTION SUMMARY")
     print("============================================================")
-    print(f"Total bets processed: {total}")
-    print(f"Updated bets:         {updated}")
-    print(f"Resolved bets:        {resolved}")
-    print(f"Still unresolved:     {unresolved}")
-    print(f"Failed lookups:       {failed}")
-    print(f"Saved back to:        {INPUT_FILE}")
+    print(f"Total bets processed:    {total}")
+    print(f"Updated bets:            {updated}")
+    print(f"Resolved bets:           {resolved_count}")
+    print(f"Still unresolved:        {unresolved_count}")
+    print(f"Failed lookups:          {failed}")
+    print(f"Result populated:        {populated_result}")
+    print(f"Winning outcome pop.:    {populated_winner}")
+    print(f"Resolution price pop.:   {populated_resolution_price}")
+    print(f"Resolved ts pop.:        {populated_resolved_ts}")
+    print(f"Saved back to:           {INPUT_FILE}")
 
 
 if __name__ == "__main__":

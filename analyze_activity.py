@@ -912,32 +912,49 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
 
 def format_wallet_record(wallet_result_rows, wallet):
     wallet = str(wallet or "").strip().lower()
-
-    if not isinstance(wallet_result_rows, list):
+    if not wallet:
         return "No tracked history"
 
-    for row in wallet_result_rows:
-        if not isinstance(row, dict):
-            continue
+    # Prefer the latest in-memory wallet_profiles data first.
+    # This is more current than wallet_result_rows and avoids stale alert records.
+    profile = {}
+    try:
+        if isinstance(wallet_profiles, dict):
+            profile = wallet_profiles.get(wallet, {}) or {}
+    except Exception:
+        profile = {}
 
-        row_wallet = str(row.get("wallet", "") or "").strip().lower()
-        if row_wallet != wallet:
-            continue
+    if isinstance(profile, dict) and profile:
+        resolved_bets = int(profile.get("resolved_bets", 0) or 0)
+        resolved_wins = int(profile.get("resolved_wins", 0) or 0)
+        resolved_losses = int(profile.get("resolved_losses", 0) or 0)
 
-        wins = int(row.get("wins", 0) or 0)
-        losses = int(row.get("losses", 0) or 0)
-        resolved = int(row.get("resolved", 0) or 0)
-        tracked_bets = int(row.get("tracked_bets", 0) or 0)
+        if resolved_bets > 0:
+            win_pct = round((resolved_wins / resolved_bets) * 100, 1)
+            return f"{resolved_wins}-{resolved_losses} ({win_pct}%)"
 
-        if resolved > 0:
-            win_pct = round((wins / resolved) * 100, 1)
-            return f"{wins}-{losses} ({win_pct}%)"
+    # Fall back to wallet_result_rows snapshot if needed.
+    if isinstance(wallet_result_rows, list):
+        for row in wallet_result_rows:
+            if not isinstance(row, dict):
+                continue
+            row_wallet = str(row.get("wallet", "") or "").strip().lower()
+            if row_wallet != wallet:
+                continue
 
-        if tracked_bets > 0:
-            return "Tracked - no resolved bets"
+            wins = int(row.get("wins", 0) or 0)
+            losses = int(row.get("losses", 0) or 0)
+            resolved = int(row.get("resolved", 0) or 0)
+            tracked_bets = int(row.get("tracked_bets", 0) or 0)
 
-        return "No tracked history"
+            if resolved > 0:
+                win_pct = round((wins / resolved) * 100, 1)
+                return f"{wins}-{losses} ({win_pct}%)"
+            if tracked_bets > 0:
+                return "Tracked - no resolved bets"
+            return "No tracked history"
 
+    return "No tracked history"
     return "No tracked history"
 
 def filter_active_wallets(wallet_profiles):
@@ -1017,8 +1034,14 @@ def compute_dynamic_wallet_weights(wallet_profiles):
         resolved_win_rate = profile.get("resolved_win_rate")
         results_confidence = float(profile.get("results_confidence", 0.0) or 0.0)
 
+        # resolved_win_rate is stored as a PERCENT (e.g. 56.0), so convert it to a 0-1 ratio here
         if resolved_win_rate is None:
-            resolved_win_rate = 0.5
+            resolved_win_rate_ratio = 0.50
+        else:
+            try:
+                resolved_win_rate_ratio = float(resolved_win_rate) / 100.0
+            except Exception:
+                resolved_win_rate_ratio = 0.50
 
         # --- CLV / behavior component ---
         clv_boost = avg_forward_clv / 2.0
@@ -1028,9 +1051,7 @@ def compute_dynamic_wallet_weights(wallet_profiles):
         leader_count = int(profile.get("leader_count", 0) or 0)
         early_count = int(profile.get("early_count", 0) or 0)
         follower_count = int(profile.get("follower_count", 0) or 0)
-
         total_roles = max(leader_count + early_count + follower_count, 1)
-
         leader_rate = leader_count / total_roles
         early_rate = early_count / total_roles
         follower_rate = follower_count / total_roles
@@ -1054,27 +1075,43 @@ def compute_dynamic_wallet_weights(wallet_profiles):
 
         # --- tracked results component ---
         # shrink small samples toward 50%
-        shrunk_win_rate = ((resolved_win_rate * resolved_bets) + (0.5 * 10)) / max(resolved_bets + 10, 1)
-        win_rate_edge = shrunk_win_rate - 0.5
+        shrunk_win_rate = (
+            (resolved_win_rate_ratio * resolved_bets) + (0.50 * 10)
+        ) / max(resolved_bets + 10, 1)
+        win_rate_edge = shrunk_win_rate - 0.50
 
-        # cap results-only effect to keep it from dominating
-        results_weight = 1.0 + (win_rate_edge * 1.2 * results_confidence)
+        # stronger but still controlled results influence
+        results_weight = 1.0 + (win_rate_edge * (0.5 + results_confidence))
 
         # --- blend both components ---
         blended_weight = (
-            (behavior_weight * 0.45) +
-            (results_weight * 0.55)
+            (behavior_weight * 0.35) +
+            (results_weight * 0.65)
         )
 
         # additional mild penalty for clearly poor real results with usable sample
-        if resolved_bets >= 7 and resolved_win_rate <= 0.35:
+        if resolved_bets >= 7 and resolved_win_rate_ratio <= 0.35:
             blended_weight -= 0.08
 
         # additional mild boost for clearly strong real results with usable sample
-        if resolved_bets >= 7 and resolved_win_rate >= 0.65:
+        if resolved_bets >= 7 and resolved_win_rate_ratio >= 0.65:
             blended_weight += 0.08
+                    
+        # --- stronger and earlier results cap ---
+        if resolved_bets >= 3:
+            if resolved_win_rate_ratio <= 0.35:
+                blended_weight = min(blended_weight, 1.00)
+            elif resolved_win_rate_ratio <= 0.45:
+                blended_weight = min(blended_weight, 1.10)
+            elif resolved_win_rate_ratio <= 0.50:
+                blended_weight = min(blended_weight, 1.20)
 
-        dynamic_weight = max(0.80, min(1.35, blended_weight))
+        # --- cap for wallets with no resolved results yet ---
+        # Prevent unproven wallets from getting max weight purely on behavior
+        if resolved_bets == 0:
+            blended_weight = min(blended_weight, 1.20)
+
+        dynamic_weight = max(0.75, min(1.60, blended_weight))
 
         profile["confidence"] = round(behavior_confidence, 4)
         profile["dynamic_weight"] = round(dynamic_weight, 4)
@@ -2283,6 +2320,67 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
 
         consensus = consensus_lookup.get((g.get("slug", ""), g.get("outcome", "")))
         if not consensus:
+            self_role = str(g.get("sequence_role", "") or "").lower()
+            base_label = str(g.get("label", "") or "").upper()
+            confirmation_count = int(g.get("confirmation_count", 0) or 0)
+            size_ratio = float(g.get("size_ratio", 0) or 0)
+            accumulation_points = int(g.get("accumulation_points", 0) or 0)
+            buy_count = int(g.get("buy_count", 0) or 0)
+            score = float(g.get("score", 0) or 0)
+            edge_pct = float(g.get("edge_pct", 0) or 0)
+            total_size = float(g.get("total_size", 0) or 0)
+            seconds_since_last_buy = int(g.get("seconds_since_last_buy", 999999) or 999999)
+            market_phase = str(g.get("market_phase", "") or "").lower()
+            current_price = float(g.get("current_price", 0) or 0)
+
+            strong_single_wallet_upgrade = (
+                self_role in {"leader", "early"}
+                and base_label in {"LEAN", "BET"}
+                and (
+                    confirmation_count >= 2
+                    or size_ratio >= 0.5
+                    or accumulation_points >= 30
+                )
+                and score >= 72
+                and buy_count >= 2
+                and total_size >= 500
+                and edge_pct >= -0.5
+                and seconds_since_last_buy <= 300
+            )
+
+            if market_phase == "live":
+                strong_single_wallet_upgrade = (
+                    strong_single_wallet_upgrade
+                    and current_price > 0
+                    and edge_pct > 0
+                    and seconds_since_last_buy <= 60
+                )
+
+            if strong_single_wallet_upgrade:
+                old_reason = str(g.get("reason", "") or "")
+                old_score = int(g.get("score", 0) or 0)
+                old_stake = int(g.get("stake_pct", 0) or 0)
+
+                g["label"] = "BET"
+                g["score"] = max(old_score, 78)
+                g["stake_pct"] = max(old_stake, 60)
+                g["consensus_upgrade"] = False
+                g["consensus_type"] = "leader_first"
+                g["consensus_score"] = 0
+                g["weighted_wallet_score_scored"] = 0
+                g["wallet_count_scored"] = 1
+                g["wallet_count_all"] = 1
+                g["reason"] = (
+                    f"{old_reason} | Upgraded by leader-first single-wallet rule "
+                    f"(role={self_role}, confirmations={confirmation_count}, "
+                    f"size_ratio={round(size_ratio, 2)}, "
+                    f"edge={round(edge_pct, 2)}%, "
+                    f"age={seconds_since_last_buy}s)"
+                )
+                consensus_debug["upgraded_to_bet"] += 1
+                upgraded.append(g)
+                continue
+
             consensus_debug["no_consensus"] += 1
             upgraded.append(g)
             continue
@@ -2742,15 +2840,12 @@ def save_clv_tracker(clv_tracker):
 def make_tracked_bet_key(g, now_ts):
     if not isinstance(g, dict):
         return None
-
     slug = str(g.get("slug", "") or "").strip()
     outcome = str(g.get("outcome", "") or "").strip()
     wallet = str(g.get("wallet", "") or "").strip().lower()
-
     if not slug or not outcome or not wallet:
         return None
-
-    return f"{slug}||{outcome}||{wallet}||{int(now_ts)}"
+    return f"{slug}||{outcome}||{wallet}"
 
 def load_tracked_bets():
     try:
@@ -5940,7 +6035,6 @@ def send_pushover_bet_alert(g):
 
     try:
         api_token = str(PUSHOVER_API_TOKEN).strip()
-
         if isinstance(PUSHOVER_USER_KEYS, (list, tuple)):
             user_keys = [str(x).strip() for x in PUSHOVER_USER_KEYS if str(x).strip()]
         else:
@@ -5950,68 +6044,41 @@ def send_pushover_bet_alert(g):
             print("Pushover send skipped: no valid user keys configured")
             return
 
+        score_display = "N/A"
+        try:
+            score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
+        except Exception:
+            score_display = "N/A"
+
+        wallet = g.get("wallet", "N/A")
+        wallet_record = format_wallet_record(wallet_result_rows, wallet)
+
+        if isinstance(wallet, str) and wallet.startswith("0x") and len(wallet) > 18:
+            wallet_short = f"{wallet[:10]}...{wallet[-6:]}"
+        else:
+            wallet_short = wallet
+
+        alert_body = (
+            f"{phase_label} | {market_text}\n"
+            f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
+            f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
+            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
+            f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
+            f"Followers: {followers_display}\n"
+            f"Start: {start_str}\n"
+            f"Last Bet Placed: {last_bet_str}\n"
+            f"Wallet: {wallet_short} | Record: {wallet_record}"
+        )
+
+        if len(alert_body) > 950:
+            alert_body = alert_body[:947] + "..."
+
+        print("Pushover debug - final message length:", len(alert_body))
+
         for user_key in user_keys:
             try:
                 print("Pushover debug - user key length:", len(user_key))
                 print("Pushover debug - user key preview:", f"{user_key[:4]}...{user_key[-4:]}")
-
-                validate_resp = requests.post(
-                    "https://api.pushover.net/1/messages.json",
-                    data={
-                        "token": api_token,
-                        "user": user_key,
-                        "title": title,
-                        "message": alert_body,
-                        "priority": PUSHOVER_PRIORITY,
-                    },
-                    timeout=10,
-                )
-
-                # --- NEW: log every alert ---
-                try:
-                    log_alert(g)
-                except Exception as e:
-                    print(f"Alert logging failed: {e}"
-                )
-                print(f"Pushover validate response ({user_key[:4]}...{user_key[-4:]}):", validate_resp.status_code, validate_resp.text)
-
-                if validate_resp.status_code != 200:
-                    continue
-
-                score_display = "N/A"
-                try:
-                    score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
-                except Exception:
-                    score_display = "N/A"
-
-                wallet = g.get("wallet", "N/A")
-                wallet_record = format_wallet_record(wallet_result_rows, wallet)
-
-                if isinstance(wallet, str) and wallet.startswith("0x") and len(wallet) > 18:
-                    wallet_short = f"{wallet[:10]}...{wallet[-6:]}"
-                else:
-                    wallet_short = wallet
-
-                alert_body = (
-                    f"{phase_label} | {market_text}\n"
-                    f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
-                    f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
-                    f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-                    f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
-                    f"Followers: {followers_display}\n"
-                    f"Start: {start_str}\n"
-                    f"Last Bet Placed: {last_bet_str}\n"
-                    f"Wallet: {wallet_short} | Record: {wallet_record}"
-                )
-
-                if len(alert_body) > 950:
-                    alert_body = alert_body[:947] + "..."
-
-                print("Pushover debug - final message length:", len(alert_body))
-
-                validate_json = validate_resp.json()
-                if validate_json.get("status") != 1:
-                    continue
 
                 resp = requests.post(
                     "https://api.pushover.net/1/messages.json",
@@ -6024,6 +6091,7 @@ def send_pushover_bet_alert(g):
                     },
                     timeout=10,
                 )
+
                 print(f"Pushover response ({user_key[:4]}...{user_key[-4:]}):", resp.status_code, resp.text)
 
                 if resp.status_code == 200:
