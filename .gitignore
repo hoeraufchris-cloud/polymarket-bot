@@ -9,6 +9,11 @@ data/*.json
 # Runtime / state files
 alerted_bets.json
 tracked_bets.txt
+.DS_Store
+all_alerts.json
+data/
+service_account.json
+tracked_bets_export.csv
 
 # Exports
 *.csv
