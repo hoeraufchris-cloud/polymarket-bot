@@ -15,6 +15,11 @@ import requests
 import urllib.request
 import urllib.parse
 import re
+import math
+import ssl
+import certifi
+
+last_export_day = None
 from collections import defaultdict
 from market_model import (
     build_recommendations,
@@ -98,7 +103,9 @@ def fetch_json_url(url):
         },
     )
 
-    with urllib.request.urlopen(req, timeout=20) as response:
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+
+    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
         raw = response.read().decode("utf-8")
         return json.loads(raw)
 
@@ -6911,15 +6918,28 @@ if __name__ == "__main__":
         print("=" * 80)
         print("FINAL BET RECOMMENDATIONS")
         print("=" * 80)
-
         if cycle_bet_alerts:
             print("\a", end="")
             for g in cycle_bet_alerts[:15]:
                 print_signal(g)
         else:
             print("No BETs this cycle.")
-
         print("=" * 80)
+
+        current_day = time.strftime("%Y-%m-%d", time.gmtime())
+
+        if last_export_day != current_day:
+            try:
+                import subprocess
+
+                print("Running daily tracked-bet resolve/export...")
+                subprocess.run(["python3", "resolve_tracked_bets.py"], check=True)
+                subprocess.run(["python3", "export_tracked_bets.py"], check=True)
+                last_export_day = current_day
+                print("Daily export completed.")
+            except Exception as e:
+                print(f"Export pipeline failed: {e}")
+
         print(f"Sleeping for {POLL_SECONDS} seconds...")
         print("=" * 80)
         time.sleep(POLL_SECONDS)
