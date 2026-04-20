@@ -2,11 +2,45 @@ import json
 import time
 from datetime import datetime
 from urllib.parse import quote
+import urllib.request
+import ssl
+import os
 
-import requests
+try:
+    import truststore
+except Exception:
+    truststore = None
 
+RESOLVE_TRUSTSTORE_INJECTED = False
 
-INPUT_FILE = "data/tracked_bets.json"
+def configure_native_truststore():
+    global RESOLVE_TRUSTSTORE_INJECTED
+
+    if RESOLVE_TRUSTSTORE_INJECTED:
+        return True
+
+    if truststore is None:
+        return False
+
+    try:
+        truststore.inject_into_ssl()
+        RESOLVE_TRUSTSTORE_INJECTED = True
+        print("[SSL] resolve_tracked_bets.py using native macOS trust store via truststore")
+        return True
+    except Exception as e:
+        print(f"[SSL truststore warning] {repr(e)}")
+        return False
+
+configure_native_truststore()
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.isdir("/data"):
+    DATA_DIR = "/data"
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN_CALLS = 0.08
 
@@ -58,6 +92,21 @@ def normalize_outcome_name(value):
     text = " ".join(text.split())
     return text
 
+def fetch_json_url(url):
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        },
+    )
+
+    ssl_context = ssl.create_default_context()
+
+    with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT, context=ssl_context) as response:
+        raw = response.read().decode("utf-8")
+
+    return json.loads(raw)
 
 def fetch_market_by_slug(slug):
     """
@@ -71,32 +120,40 @@ def fetch_market_by_slug(slug):
     ]
 
     last_error = None
+    slug_normalized = str(slug or "").strip().lower()
 
     for url in urls:
         try:
-            resp = requests.get(url, timeout=REQUEST_TIMEOUT)
-            resp.raise_for_status()
-            payload = resp.json()
+            payload = fetch_json_url(url)
 
             if isinstance(payload, dict):
-                if payload.get("slug") == slug:
+                if str(payload.get("slug", "") or "").strip().lower() == slug_normalized:
                     return payload
 
                 markets = payload.get("markets")
                 if isinstance(markets, list):
                     for item in markets:
-                        if isinstance(item, dict) and item.get("slug") == slug:
+                        if (
+                            isinstance(item, dict)
+                            and str(item.get("slug", "") or "").strip().lower() == slug_normalized
+                        ):
                             return item
 
                 data = payload.get("data")
                 if isinstance(data, list):
                     for item in data:
-                        if isinstance(item, dict) and item.get("slug") == slug:
+                        if (
+                            isinstance(item, dict)
+                            and str(item.get("slug", "") or "").strip().lower() == slug_normalized
+                        ):
                             return item
 
             if isinstance(payload, list):
                 for item in payload:
-                    if isinstance(item, dict) and item.get("slug") == slug:
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("slug", "") or "").strip().lower() == slug_normalized
+                    ):
                         return item
 
         except Exception as e:
@@ -317,8 +374,9 @@ def main():
             else:
                 unresolved_count += 1
 
-        except Exception:
+        except Exception as e:
             failed += 1
+            print(f"[Resolve lookup error] key={key} slug={slug} error={repr(e)}")
 
         if total % 25 == 0:
             print(

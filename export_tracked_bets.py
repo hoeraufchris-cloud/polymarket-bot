@@ -2,14 +2,18 @@ import os
 import csv
 import json
 from datetime import datetime, timezone
-
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+if os.path.isdir("/data"):
+    DATA_DIR = "/data"
+else:
+    DATA_DIR = os.path.join(BASE_DIR, "data")
+os.makedirs(DATA_DIR, exist_ok=True)
 
-INPUT_FILE = "data/tracked_bets.json"
+INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
 OUTPUT_FILE = "tracked_bets_export.csv"
-
 SERVICE_ACCOUNT_FILE = "service_account.json"
 SPREADSHEET_ID = "11JsBWkSWN5RTEnaEQx9uUJzEjNt9aeIU43gPoxfkYLY"
 SHEET_NAME = "Sheet1"

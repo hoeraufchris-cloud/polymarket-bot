@@ -19,6 +19,45 @@ import math
 import ssl
 import certifi
 
+try:
+    import truststore
+except Exception:
+    truststore = None
+
+TRUSTSTORE_INJECTED = False
+
+def configure_native_truststore():
+    global TRUSTSTORE_INJECTED
+
+    if TRUSTSTORE_INJECTED:
+        return True
+
+    if truststore is None:
+        return False
+
+    try:
+        truststore.inject_into_ssl()
+        TRUSTSTORE_INJECTED = True
+        print("[SSL] Using native macOS trust store via truststore")
+        return True
+    except Exception as e:
+        print(f"[SSL truststore warning] {repr(e)}")
+        return False
+
+configure_native_truststore()
+
+def make_market_outcome_key(g):
+    if not isinstance(g, dict):
+        return None
+
+    slug = str(g.get("slug", "") or "").strip()
+    outcome = str(g.get("outcome", "") or "").strip()
+
+    if not slug or not outcome:
+        return None
+
+    return f"{slug}||{outcome}"
+
 last_export_day = None
 from collections import defaultdict
 from market_model import (
@@ -94,6 +133,146 @@ BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_ONE_FAIL = 2
 BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_MULTI_FAIL = 3
 
 
+COMBINED_CA_BUNDLE_PATH = None
+
+def extract_pem_blocks(text):
+    if not text:
+        return []
+
+    blocks = re.findall(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        str(text),
+        flags=re.DOTALL,
+    )
+
+    cleaned_blocks = []
+    seen = set()
+
+    for block in blocks:
+        block = block.strip()
+        if not block:
+            continue
+        if block in seen:
+            continue
+        seen.add(block)
+        cleaned_blocks.append(block + "\n")
+
+    return cleaned_blocks
+
+def get_zscaler_pem_blocks():
+    env_cert_path = str(os.environ.get("ZSCALER_CERT_PATH", "") or "").strip()
+
+    if env_cert_path:
+        if not os.path.exists(env_cert_path):
+            raise RuntimeError(f"ZSCALER_CERT_PATH file not found: {env_cert_path}")
+
+        try:
+            with open(env_cert_path, "r", encoding="utf-8") as f:
+                manual_pem = f.read()
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not read ZSCALER_CERT_PATH file: {env_cert_path} -> {repr(e)}"
+            )
+
+        manual_blocks = extract_pem_blocks(manual_pem)
+        if not manual_blocks:
+            raise RuntimeError(
+                f"ZSCALER_CERT_PATH file contains no PEM certificate blocks: {env_cert_path}"
+            )
+
+        print(
+            f"[CA bundle] Using manual Zscaler cert path: {env_cert_path} "
+            f"({len(manual_blocks)} cert(s))"
+        )
+        return manual_blocks
+
+    try:
+        import subprocess
+
+        candidate_common_names = [
+            "Zscaler Root CA",
+            "Zscaler Intermediate Root CA",
+            "Zscaler",
+        ]
+
+        collected_blocks = []
+        seen = set()
+
+        for common_name in candidate_common_names:
+            proc = subprocess.run(
+                ["security", "find-certificate", "-a", "-c", common_name, "-p"],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            pem_blocks = extract_pem_blocks(proc.stdout)
+            for block in pem_blocks:
+                if block in seen:
+                    continue
+                seen.add(block)
+                collected_blocks.append(block)
+
+        if collected_blocks:
+            print(f"[CA bundle] Found {len(collected_blocks)} Zscaler cert(s) in Keychain")
+            return collected_blocks
+
+    except Exception as e:
+        print(f"[CA bundle keychain warning] {repr(e)}")
+
+    return []
+
+def get_preferred_ca_bundle_path():
+    global COMBINED_CA_BUNDLE_PATH
+
+    if COMBINED_CA_BUNDLE_PATH and os.path.exists(COMBINED_CA_BUNDLE_PATH):
+        return COMBINED_CA_BUNDLE_PATH
+
+    try:
+        base_bundle_path = certifi.where()
+    except Exception:
+        base_bundle_path = None
+
+    base_pem = ""
+    if base_bundle_path and os.path.exists(base_bundle_path):
+        try:
+            with open(base_bundle_path, "r", encoding="utf-8") as f:
+                base_pem = f.read()
+        except Exception:
+            base_pem = ""
+
+    zscaler_blocks = get_zscaler_pem_blocks()
+
+    if zscaler_blocks:
+        bundle_path = os.path.join(DATA_DIR, "combined_ca_bundle.pem")
+
+        combined_pem = base_pem
+        if combined_pem and not combined_pem.endswith("\n"):
+            combined_pem += "\n"
+        combined_pem += "\n".join(block.strip() for block in zscaler_blocks) + "\n"
+
+        with open(bundle_path, "w", encoding="utf-8") as f:
+            f.write(combined_pem)
+
+        COMBINED_CA_BUNDLE_PATH = bundle_path
+        print(f"[CA bundle] Using certifi + Zscaler bundle: {bundle_path}")
+        return COMBINED_CA_BUNDLE_PATH
+
+    if base_bundle_path:
+        print(f"[CA bundle] Falling back to certifi only: {base_bundle_path}")
+        return base_bundle_path
+
+    return None
+
+def configure_ssl_ca_environment():
+    bundle_path = get_preferred_ca_bundle_path()
+    if not bundle_path:
+        return None
+
+    os.environ["SSL_CERT_FILE"] = bundle_path
+    os.environ["REQUESTS_CA_BUNDLE"] = bundle_path
+    return bundle_path
+
 def fetch_json_url(url):
     req = urllib.request.Request(
         url,
@@ -103,11 +282,37 @@ def fetch_json_url(url):
         },
     )
 
-    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    last_error = None
 
-    with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
-        raw = response.read().decode("utf-8")
+    if TRUSTSTORE_INJECTED:
+        try:
+            ssl_context = ssl.create_default_context()
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                raw = response.read().decode("utf-8")
+            return json.loads(raw)
+        except Exception as e:
+            last_error = e
+
+    bundle_path = configure_ssl_ca_environment()
+
+    if bundle_path:
+        try:
+            ssl_context = ssl.create_default_context(cafile=bundle_path)
+            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+                raw = response.read().decode("utf-8")
+            return json.loads(raw)
+        except Exception as e:
+            last_error = e
+
+    try:
+        ssl_context = ssl.create_default_context()
+        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+            raw = response.read().decode("utf-8")
         return json.loads(raw)
+    except Exception as e:
+        last_error = e
+
+    raise last_error
 
 
 def load_leaderboard_wallets(limit=25, offsets=None):
@@ -1139,18 +1344,7 @@ def fetch_gamma_market_metadata(slug, outcome):
     url = f"https://gamma-api.polymarket.com/markets?slug={encoded_slug}"
 
     try:
-        req = urllib.request.Request(
-            url,
-            headers={
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json",
-            },
-        )
-
-        with urllib.request.urlopen(req, timeout=10) as response:
-            raw = response.read().decode("utf-8")
-            data = json.loads(raw)
-
+        data = fetch_json_url(url)
     except Exception as e:
         print(f"[Gamma lookup error] slug={slug} outcome={outcome} url={url} error={repr(e)}")
         result = {"price": None, "event_start_time": None}
@@ -3443,91 +3637,224 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
 
 TRACKED_BET_RESOLUTION_CACHE = {}
 
+def parse_iso_to_ts(value):
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+        return int(datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp())
+    except Exception:
+        return None
+
+def safe_json_loads(value):
+    if isinstance(value, (dict, list)):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return None
+
+def normalize_outcome_name(value):
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    text = text.replace("’", "'")
+    text = " ".join(text.split())
+    return text
+
+def fetch_market_by_slug(slug):
+    slug_clean = str(slug or "").strip()
+    slug_key = slug_clean.lower()
+    encoded_slug = urllib.parse.quote(slug_clean, safe="")
+    urls = [
+        f"https://gamma-api.polymarket.com/markets/slug/{encoded_slug}",
+        f"https://gamma-api.polymarket.com/markets?slug={encoded_slug}",
+    ]
+    last_error = None
+
+    for url in urls:
+        try:
+            payload = fetch_json_url(url)
+
+            if isinstance(payload, dict):
+                if str(payload.get("slug", "") or "").strip().lower() == slug_key:
+                    return payload
+
+                markets = payload.get("markets")
+                if isinstance(markets, list):
+                    for item in markets:
+                        if (
+                            isinstance(item, dict)
+                            and str(item.get("slug", "") or "").strip().lower() == slug_key
+                        ):
+                            return item
+
+                data = payload.get("data")
+                if isinstance(data, list):
+                    for item in data:
+                        if (
+                            isinstance(item, dict)
+                            and str(item.get("slug", "") or "").strip().lower() == slug_key
+                        ):
+                            return item
+
+            if isinstance(payload, list):
+                for item in payload:
+                    if (
+                        isinstance(item, dict)
+                        and str(item.get("slug", "") or "").strip().lower() == slug_key
+                    ):
+                        return item
+        except Exception as e:
+            last_error = e
+
+    if last_error is not None:
+        raise last_error
+
+    return None
+
+def extract_winning_outcome(market_data):
+    direct_fields = [
+        "winning_outcome",
+        "winningOutcome",
+        "winner",
+        "outcome",
+    ]
+    for field in direct_fields:
+        value = market_data.get(field)
+        if value not in (None, ""):
+            return value
+
+    outcome_prices = safe_json_loads(market_data.get("outcomePrices"))
+    outcomes = safe_json_loads(market_data.get("outcomes"))
+    if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+        try:
+            numeric_prices = [float(x) for x in outcome_prices]
+            max_idx = max(range(len(numeric_prices)), key=lambda i: numeric_prices[i])
+            if numeric_prices[max_idx] >= 0.999:
+                return outcomes[max_idx]
+        except Exception:
+            pass
+
+    return None
+
+def extract_resolution_price(market_data, winning_outcome):
+    direct_fields = [
+        "resolution",
+        "resolution_price",
+        "resolutionPrice",
+        "settlement_price",
+        "settlementPrice",
+    ]
+    for field in direct_fields:
+        value = market_data.get(field)
+        if value not in (None, ""):
+            try:
+                return float(value)
+            except Exception:
+                return value
+
+    outcome_prices = safe_json_loads(market_data.get("outcomePrices"))
+    outcomes = safe_json_loads(market_data.get("outcomes"))
+    winning_norm = normalize_outcome_name(winning_outcome)
+    if isinstance(outcomes, list) and isinstance(outcome_prices, list) and len(outcomes) == len(outcome_prices):
+        for outcome, price in zip(outcomes, outcome_prices):
+            if normalize_outcome_name(outcome) == winning_norm:
+                try:
+                    return float(price)
+                except Exception:
+                    return price
+
+    return None
+
+def is_market_closed(market_data):
+    closed_fields = [
+        "closed",
+        "resolved",
+        "archived",
+        "isResolved",
+        "isClosed",
+    ]
+    for field in closed_fields:
+        value = market_data.get(field)
+        if isinstance(value, bool) and value:
+            return True
+
+    winning_outcome = extract_winning_outcome(market_data)
+    if winning_outcome not in (None, ""):
+        return True
+
+    return False
 
 def fetch_gamma_market_resolution(slug):
-    cache_key = str(slug or "").strip().lower()
-    if not cache_key:
-        return {
-            "resolved": False,
-            "winning_outcome": None,
-            "resolution_price": None,
-        }
-
-    if cache_key in TRACKED_BET_RESOLUTION_CACHE:
-        return TRACKED_BET_RESOLUTION_CACHE[cache_key]
-
-    encoded_slug = urllib.parse.quote(slug, safe="")
-    url = f"https://gamma-api.polymarket.com/markets?slug={encoded_slug}"
-
+    slug_clean = str(slug or "").strip()
+    cache_key = slug_clean.lower()
     result = {
         "resolved": False,
         "winning_outcome": None,
         "resolution_price": None,
+        "resolved_ts": None,
+        "outcomes": None,
     }
 
+    if not cache_key:
+        return result
+
+    cached = TRACKED_BET_RESOLUTION_CACHE.get(cache_key)
+    if isinstance(cached, dict) and "data" in cached:
+        cached_data = cached.get("data") or {}
+        fetched_ts = int(cached.get("fetched_ts", 0) or 0)
+        cache_age = max(0, int(time.time()) - fetched_ts)
+
+        if cached_data.get("resolved"):
+            return cached_data
+
+        if cache_age <= 60:
+            return cached_data
+
     try:
-        data = fetch_json_url(url)
+        market = fetch_market_by_slug(slug_clean)
     except Exception:
-        TRACKED_BET_RESOLUTION_CACHE[cache_key] = result
+        TRACKED_BET_RESOLUTION_CACHE[cache_key] = {
+            "fetched_ts": int(time.time()),
+            "data": result,
+        }
         return result
 
-    if not isinstance(data, list) or not data:
-        TRACKED_BET_RESOLUTION_CACHE[cache_key] = result
-        return result
-
-    market = data[0]
     if not isinstance(market, dict):
-        TRACKED_BET_RESOLUTION_CACHE[cache_key] = result
+        TRACKED_BET_RESOLUTION_CACHE[cache_key] = {
+            "fetched_ts": int(time.time()),
+            "data": result,
+        }
         return result
 
-    outcomes_raw = market.get("outcomes")
-    prices_raw = market.get("outcomePrices")
-
-    try:
-        outcomes = json.loads(outcomes_raw) if isinstance(outcomes_raw, str) else outcomes_raw
-        prices = json.loads(prices_raw) if isinstance(prices_raw, str) else prices_raw
-    except Exception:
-        outcomes = None
-        prices = None
-
-    if not isinstance(outcomes, list) or not isinstance(prices, list):
-        TRACKED_BET_RESOLUTION_CACHE[cache_key] = result
-        return result
-
-    is_closed = bool(market.get("closed", False))
-    is_active = market.get("active")
-    accepting_orders = market.get("acceptingOrders")
-
-    resolved_hint = (
-        is_closed
-        or is_active is False
-        or accepting_orders is False
+    outcomes = safe_json_loads(market.get("outcomes"))
+    winning_outcome = extract_winning_outcome(market)
+    resolution_price = extract_resolution_price(market, winning_outcome)
+    resolved_ts = (
+        parse_iso_to_ts(market.get("closedTime"))
+        or parse_iso_to_ts(market.get("endDate"))
+        or parse_iso_to_ts(market.get("gameStartTime"))
+        or parse_iso_to_ts(market.get("endDateIso"))
+        or parse_iso_to_ts(market.get("resolveTime"))
+        or parse_iso_to_ts(market.get("resolvedTime"))
     )
 
-    winning_outcome = None
-    resolution_price = None
+    result = {
+        "resolved": is_market_closed(market),
+        "winning_outcome": winning_outcome,
+        "resolution_price": resolution_price,
+        "resolved_ts": resolved_ts,
+        "outcomes": outcomes if isinstance(outcomes, list) else None,
+    }
 
-    for outcome_name, outcome_price in zip(outcomes, prices):
-        try:
-            price_value = float(outcome_price)
-        except Exception:
-            continue
-
-        if price_value >= 0.999:
-            winning_outcome = str(outcome_name)
-            resolution_price = price_value
-            break
-
-    if resolved_hint and winning_outcome is not None:
-        result = {
-            "resolved": True,
-            "winning_outcome": winning_outcome,
-            "resolution_price": resolution_price,
-        }
-
-    TRACKED_BET_RESOLUTION_CACHE[cache_key] = result
+    TRACKED_BET_RESOLUTION_CACHE[cache_key] = {
+        "fetched_ts": int(time.time()),
+        "data": result,
+    }
     return result
-
 
 def update_tracked_bet_results(tracked_bets, now_ts):
     if not isinstance(tracked_bets, dict):
@@ -3538,6 +3865,88 @@ def update_tracked_bet_results(tracked_bets, now_ts):
             "losses": 0,
             "newly_resolved": 0,
         }
+
+    tracked = 0
+    resolved = 0
+    wins = 0
+    losses = 0
+    newly_resolved = 0
+
+    for tracked_bet_key, row in tracked_bets.items():
+        if not isinstance(row, dict):
+            continue
+
+        tracked += 1
+
+        if row.get("resolved"):
+            resolved += 1
+            if row.get("result") == "WIN":
+                wins += 1
+            elif row.get("result") == "LOSS":
+                losses += 1
+            continue
+
+        slug = str(row.get("slug", "") or "").strip()
+        tracked_outcome = str(row.get("outcome", "") or "").strip()
+        if not slug or not tracked_outcome:
+            continue
+
+        resolution = fetch_gamma_market_resolution(slug)
+        if not resolution.get("resolved"):
+            continue
+
+        winning_outcome = resolution.get("winning_outcome")
+        resolution_price = resolution.get("resolution_price")
+        resolved_ts = resolution.get("resolved_ts")
+        outcomes = resolution.get("outcomes")
+
+        tracked_outcome_norm = normalize_outcome_name(tracked_outcome)
+        winning_norm = normalize_outcome_name(winning_outcome)
+
+        result = None
+
+        if winning_norm and tracked_outcome_norm:
+            result = "WIN" if tracked_outcome_norm == winning_norm else "LOSS"
+        elif isinstance(outcomes, list) and len(outcomes) == 2 and resolution_price is not None:
+            try:
+                resolution_float = float(resolution_price)
+                if resolution_float == 1.0:
+                    inferred_winner = outcomes[0]
+                elif resolution_float == 0.0:
+                    inferred_winner = outcomes[1]
+                else:
+                    inferred_winner = None
+
+                inferred_norm = normalize_outcome_name(inferred_winner)
+                if inferred_norm and tracked_outcome_norm:
+                    winning_outcome = inferred_winner
+                    result = "WIN" if tracked_outcome_norm == inferred_norm else "LOSS"
+            except Exception:
+                pass
+
+        if result is None:
+            continue
+
+        row["resolved"] = True
+        row["winning_outcome"] = str(winning_outcome or "").strip() or None
+        row["resolved_ts"] = int(resolved_ts or now_ts)
+        row["resolution_price"] = resolution_price
+        row["result"] = result
+
+        newly_resolved += 1
+        resolved += 1
+        if result == "WIN":
+            wins += 1
+        else:
+            losses += 1
+
+    return {
+        "tracked": tracked,
+        "resolved": resolved,
+        "wins": wins,
+        "losses": losses,
+        "newly_resolved": newly_resolved,
+    }
 
     tracked = 0
     resolved = 0
@@ -6087,21 +6496,32 @@ def send_pushover_bet_alert(g):
                 print("Pushover debug - user key length:", len(user_key))
                 print("Pushover debug - user key preview:", f"{user_key[:4]}...{user_key[-4:]}")
 
-                resp = requests.post(
+                payload = urllib.parse.urlencode({
+                    "token": api_token,
+                    "user": user_key,
+                    "title": title,
+                    "message": alert_body,
+                    "priority": PUSHOVER_PRIORITY,
+                }).encode("utf-8")
+
+                req = urllib.request.Request(
                     "https://api.pushover.net/1/messages.json",
-                    data={
-                        "token": api_token,
-                        "user": user_key,
-                        "title": title,
-                        "message": alert_body,
-                        "priority": PUSHOVER_PRIORITY,
+                    data=payload,
+                    headers={
+                        "Content-Type": "application/x-www-form-urlencoded",
+                        "User-Agent": "Mozilla/5.0",
                     },
-                    timeout=10,
+                    method="POST",
                 )
 
-                print(f"Pushover response ({user_key[:4]}...{user_key[-4:]}):", resp.status_code, resp.text)
+                ssl_context = ssl.create_default_context()
+                with urllib.request.urlopen(req, timeout=10, context=ssl_context) as response:
+                    resp_status = response.getcode()
+                    resp_text = response.read().decode("utf-8", errors="replace")
 
-                if resp.status_code == 200:
+                print(f"Pushover response ({user_key[:4]}...{user_key[-4:]}):", resp_status, resp_text)
+
+                if resp_status == 200:
                     try:
                         log_alert(g)
                     except Exception as e:
@@ -6329,10 +6749,15 @@ if __name__ == "__main__":
     while True:
         cycle_bet_alerts = []
         rejected_candidates = []
-
         try:
-            wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
+            preload_tracked_bet_summary = update_tracked_bet_results(
+                tracked_bets,
+                int(time.time()),
+            )
+            if preload_tracked_bet_summary.get("newly_resolved", 0) > 0:
+                save_tracked_bets(tracked_bets)
 
+            wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
             result = run_pipeline(
                 wallet_profiles,
                 wallet_result_rows=wallet_result_rows,
@@ -6455,8 +6880,25 @@ if __name__ == "__main__":
             alert_decision_counts["model_history_candidates"] = len(model_history_candidates)
             alert_decision_counts["model_history_recorded"] = model_history_recorded_count
 
-            new_bet_alerts = []
+            alert_candidates = []
+            alert_candidate_keys_seen = set()
+
             for g in bet_candidates:
+                candidate_key = make_market_outcome_key(g)
+                if candidate_key in alert_candidate_keys_seen:
+                    continue
+                alert_candidates.append(g)
+                alert_candidate_keys_seen.add(candidate_key)
+
+            for g in model_history_candidates:
+                candidate_key = make_market_outcome_key(g)
+                if candidate_key in alert_candidate_keys_seen:
+                    continue
+                alert_candidates.append(g)
+                alert_candidate_keys_seen.add(candidate_key)
+
+            new_bet_alerts = []
+            for g in alert_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
                 decision = classify_bet_alert_decision(
@@ -6474,7 +6916,7 @@ if __name__ == "__main__":
 
             cycle_bet_alerts = new_bet_alerts
 
-            raw_bet_age_summary = summarize_bet_age_buckets(bet_candidates)
+            raw_bet_age_summary = summarize_bet_age_buckets(alert_candidates)
             sent_bet_age_summary = summarize_bet_age_buckets(new_bet_alerts)
 
             # --- extract metrics for distribution analysis ---
