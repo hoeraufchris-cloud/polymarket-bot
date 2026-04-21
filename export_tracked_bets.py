@@ -12,6 +12,17 @@ else:
     DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+INSTANCE_LABEL = str(
+    os.environ.get("BOT_INSTANCE_LABEL")
+    or ("RAILWAY" if os.path.isdir("/data") else "LOCAL")
+).strip()
+if not INSTANCE_LABEL:
+    INSTANCE_LABEL = "UNKNOWN"
+
+ALLOW_NON_RAILWAY_TRACKED_BET_IO = str(
+    os.environ.get("ALLOW_NON_RAILWAY_TRACKED_BET_IO", "") or ""
+).strip().lower() in {"1", "true", "yes"}
+
 INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
 OUTPUT_FILE = "tracked_bets_export.csv"
 SERVICE_ACCOUNT_FILE = "service_account.json"
@@ -252,8 +263,17 @@ def write_csv(rows):
 
 
 def main():
-    print(f"RUNNING FILE: {__file__}")
+    print(f"RUNNING FILE: {os.path.abspath(__file__)}")
     print(f"WORKING DIRECTORY: {os.getcwd()}")
+    print(f"INSTANCE_LABEL: {INSTANCE_LABEL}")
+
+    if INSTANCE_LABEL != "RAILWAY" and not ALLOW_NON_RAILWAY_TRACKED_BET_IO:
+        print(
+            f"Refusing to export tracked bets on non-source instance: "
+            f"{INSTANCE_LABEL}. "
+            f"Set ALLOW_NON_RAILWAY_TRACKED_BET_IO=1 to override intentionally."
+        )
+        return
 
     tracked = load_tracked_bets()
     bets = [bet for bet in tracked.values() if isinstance(bet, dict)]

@@ -40,6 +40,17 @@ else:
     DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
+INSTANCE_LABEL = str(
+    os.environ.get("BOT_INSTANCE_LABEL")
+    or ("RAILWAY" if os.path.isdir("/data") else "LOCAL")
+).strip()
+if not INSTANCE_LABEL:
+    INSTANCE_LABEL = "UNKNOWN"
+
+ALLOW_NON_RAILWAY_TRACKED_BET_IO = str(
+    os.environ.get("ALLOW_NON_RAILWAY_TRACKED_BET_IO", "") or ""
+).strip().lower() in {"1", "true", "yes"}
+
 INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN_CALLS = 0.08
@@ -328,14 +339,20 @@ def iter_bets(data):
 
 
 def main():
-    data = load_tracked_bets()
+    if INSTANCE_LABEL != "RAILWAY" and not ALLOW_NON_RAILWAY_TRACKED_BET_IO:
+        print(
+            f"Refusing to resolve tracked bets on non-source instance: "
+            f"{INSTANCE_LABEL}. "
+            f"Set ALLOW_NON_RAILWAY_TRACKED_BET_IO=1 to override intentionally."
+        )
+        return
 
+    data = load_tracked_bets()
     total = 0
     updated = 0
     resolved_count = 0
     unresolved_count = 0
     failed = 0
-
     slug_cache = {}
 
     for key, bet in iter_bets(data):

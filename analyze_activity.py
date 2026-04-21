@@ -7389,12 +7389,12 @@ if __name__ == "__main__":
             print("No BETs this cycle.")
         print("=" * 80)
 
-        current_day = time.strftime("%Y-%m-%d", time.gmtime())
+    current_day = time.strftime("%Y-%m-%d", time.gmtime())
 
+    if INSTANCE_LABEL == "RAILWAY":
         if last_export_day != current_day:
             try:
                 import subprocess
-
                 print("Running daily tracked-bet resolve/export...")
                 subprocess.run(["python3", "resolve_tracked_bets.py"], check=True)
                 subprocess.run(["python3", "export_tracked_bets.py"], check=True)
@@ -7402,6 +7402,13 @@ if __name__ == "__main__":
                 print("Daily export completed.")
             except Exception as e:
                 print(f"Export pipeline failed: {e}")
+        else:
+            if last_export_day != current_day:
+                print(
+                    f"Skipping daily tracked-bet resolve/export on non-source instance: "
+                    f"{INSTANCE_LABEL}"
+                )
+                last_export_day = current_day
 
         print(f"Sleeping for {POLL_SECONDS} seconds...")
         print("=" * 80)
