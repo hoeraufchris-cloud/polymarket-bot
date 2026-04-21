@@ -97,15 +97,19 @@ BET_ALERT_MIN_PRICE_IMPROVEMENT = 0.01
 BET_ALERT_MAX_ADVERSE_PRICE_MOVE = 0.04
 BET_ALERT_MIN_STAKE_PCT_INCREASE = 10
 import os
-
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
 if os.path.isdir("/data"):
     DATA_DIR = "/data"
 else:
     DATA_DIR = os.path.join(BASE_DIR, "data")
-
 os.makedirs(DATA_DIR, exist_ok=True)
+
+INSTANCE_LABEL = str(
+    os.environ.get("BOT_INSTANCE_LABEL")
+    or ("RAILWAY" if os.path.isdir("/data") else "LOCAL")
+).strip()
+if not INSTANCE_LABEL:
+    INSTANCE_LABEL = "UNKNOWN"
 
 CLV_TRACKER_PATH = f"{DATA_DIR}/clv_tracker.json"
 TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
@@ -6214,17 +6218,17 @@ def send_pushover_bet_alert(g):
             entry_price_str = f"+{entry_odds}" if entry_odds > 0 else f"{entry_odds}"
     except Exception:
         pass
-    title = "BET ALERT"
+    title = f"[{INSTANCE_LABEL}] BET ALERT"
     if g.get("duplicate_reason"):
-        title = f"DUPLICATE BET – {g['duplicate_reason']}"
+        title = f"[{INSTANCE_LABEL}] DUPLICATE BET – {g['duplicate_reason']}"
     elif g.get("possible_flip"):
         flip_reason = str(g.get("possible_flip_reason") or "").strip()
         if flip_reason:
-            title = f"POSSIBLE FLIP – {flip_reason}"
+            title = f"[{INSTANCE_LABEL}] POSSIBLE FLIP – {flip_reason}"
         else:
-            title = "POSSIBLE FLIP"
+            title = f"[{INSTANCE_LABEL}] POSSIBLE FLIP"
     elif g.get("opposite_conflict"):
-        title = "OPPOSITE-SIDE CONFLICT"
+        title = f"[{INSTANCE_LABEL}] OPPOSITE-SIDE CONFLICT"
 
     event_start = g.get("event_start_time")
     formatted_start, minutes_to_start = format_event_start(event_start)
@@ -6475,6 +6479,7 @@ def send_pushover_bet_alert(g):
             wallet_short = wallet
 
         alert_body = (
+            f"Source: {INSTANCE_LABEL}\n"
             f"{phase_label} | {market_text}\n"
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
             f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
@@ -6713,6 +6718,7 @@ if __name__ == "__main__":
     tracked_bets = load_tracked_bets()
     signal_metrics_history = load_signal_metrics_history()
     signal_stage_tracker = load_signal_stage_tracker()
+    print(f"INSTANCE_LABEL: {INSTANCE_LABEL}")
     print(f"BASE_DIR: {BASE_DIR}")
     print(f"DATA_DIR in use: {DATA_DIR}")
     print(f"ALERTED_BETS_PATH: {ALERTED_BETS_PATH}")
@@ -6911,6 +6917,21 @@ if __name__ == "__main__":
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"]):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
+
+                    tracked_key = make_tracked_bet_key(alert_g, result["now_ts"])
+                    tracked_exists = tracked_key in tracked_bets if tracked_key else False
+
+                    print(
+                        f"[TRACKED WRITE {INSTANCE_LABEL}] "
+                        f"tracked_exists={tracked_exists} "
+                        f"key={tracked_key} "
+                        f"market={alert_g.get('market') or alert_g.get('title') or alert_g.get('slug')} "
+                        f"outcome={alert_g.get('outcome')} "
+                        f"label={alert_g.get('label')} "
+                        f"stake={alert_g.get('stake_pct')} "
+                        f"tracked_bets_count={len(tracked_bets)}"
+                    )
+
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
