@@ -26,6 +26,7 @@ ALLOW_NON_RAILWAY_TRACKED_BET_IO = str(
 INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
 OUTPUT_FILE = "tracked_bets_export.csv"
 SERVICE_ACCOUNT_FILE = "service_account.json"
+SERVICE_ACCOUNT_JSON_ENV = "GOOGLE_SERVICE_ACCOUNT_JSON"
 SPREADSHEET_ID = "11JsBWkSWN5RTEnaEQx9uUJzEjNt9aeIU43gPoxfkYLY"
 SHEET_NAME = "Sheet1"
 
@@ -154,6 +155,22 @@ def make_sheet_row_key_from_list(row_values, header_index):
         get_value("Alert Price"),
     ])
 
+def load_google_sheets_credentials(scopes):
+    raw_service_account_json = str(
+        os.environ.get(SERVICE_ACCOUNT_JSON_ENV, "") or ""
+    ).strip()
+
+    if raw_service_account_json:
+        return Credentials.from_service_account_info(
+            json.loads(raw_service_account_json),
+            scopes=scopes,
+        )
+
+    return Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE,
+        scopes=scopes,
+    )
+
 
 def push_to_google_sheets(rows):
     print("=== GOOGLE SHEETS PUSH START ===")
@@ -166,11 +183,7 @@ def push_to_google_sheets(rows):
         return
 
     scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-
-    creds = Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE,
-        scopes=scopes,
-    )
+    creds = load_google_sheets_credentials(scopes)
 
     service = build("sheets", "v4", credentials=creds)
     sheet = service.spreadsheets()

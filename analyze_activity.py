@@ -116,6 +116,7 @@ TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
 ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
+TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
 BET_ALERT_MIN_NEW_SHARP_STAKE = 1000
@@ -7389,26 +7390,29 @@ if __name__ == "__main__":
             print("No BETs this cycle.")
         print("=" * 80)
 
-    current_day = time.strftime("%Y-%m-%d", time.gmtime())
+        current_export_bucket = int(time.time() // TRACKED_BETS_EXPORT_INTERVAL_SECONDS)
 
-    if INSTANCE_LABEL == "RAILWAY":
-        if last_export_day != current_day:
-            try:
-                import subprocess
-                print("Running daily tracked-bet resolve/export...")
-                subprocess.run(["python3", "resolve_tracked_bets.py"], check=True)
-                subprocess.run(["python3", "export_tracked_bets.py"], check=True)
-                last_export_day = current_day
-                print("Daily export completed.")
-            except Exception as e:
-                print(f"Export pipeline failed: {e}")
+        if INSTANCE_LABEL == "RAILWAY":
+            if last_export_day != current_export_bucket:
+                try:
+                    import subprocess
+                    print(
+                        "Running Railway resolved tracked-bet resolve/export "
+                        f"(interval={TRACKED_BETS_EXPORT_INTERVAL_SECONDS}s)..."
+                    )
+                    subprocess.run(["python3", "resolve_tracked_bets.py"], check=True)
+                    subprocess.run(["python3", "export_tracked_bets.py"], check=True)
+                    last_export_day = current_export_bucket
+                    print("Railway resolved export completed.")
+                except Exception as e:
+                    print(f"Export pipeline failed: {e}")
         else:
-            if last_export_day != current_day:
+            if last_export_day != current_export_bucket:
                 print(
-                    f"Skipping daily tracked-bet resolve/export on non-source instance: "
+                    f"Skipping tracked-bet resolve/export on non-source instance: "
                     f"{INSTANCE_LABEL}"
                 )
-                last_export_day = current_day
+                last_export_day = current_export_bucket
 
         print(f"Sleeping for {POLL_SECONDS} seconds...")
         print("=" * 80)
