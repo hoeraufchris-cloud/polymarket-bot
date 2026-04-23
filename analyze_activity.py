@@ -137,6 +137,55 @@ BET_ALERT_SOFT_STRONG_MAX_MINUTES_TO_START = 30
 BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_ONE_FAIL = 2
 BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_MULTI_FAIL = 3
 
+BET_ALERT_HARD_MIN_SIZE_RATIO = 1.0
+BET_ALERT_HARD_PRE_EVENISH_MIN_SIZE_RATIO = 5.0
+BET_ALERT_PRE_EARLY_SCORE_BONUS = 5
+BET_ALERT_PRE_LEADER_SCORE_PENALTY = 5
+
+def get_structural_hard_fail_reason(g):
+    if not isinstance(g, dict):
+        return None
+
+    market_phase = str(g.get("market_phase", "") or "").strip()
+    odds_bucket = str(g.get("odds_bucket", "") or "").strip()
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    if size_ratio < BET_ALERT_HARD_MIN_SIZE_RATIO:
+        return "size_ratio_below_1"
+
+    if market_phase == "Live" and odds_bucket == "-110 to -150":
+        return "live_-110_to_-150_block"
+
+    if (
+        market_phase == "Pre-Game"
+        and odds_bucket == "Even-ish"
+        and size_ratio < BET_ALERT_HARD_PRE_EVENISH_MIN_SIZE_RATIO
+    ):
+        return "pregame_evenish_sub_5_ratio"
+
+    return None
+
+
+def apply_phase_sequence_score_adjustment(score, g):
+    adjusted_score = int(score or 0)
+
+    if not isinstance(g, dict):
+        return max(0, adjusted_score)
+
+    market_phase = str(g.get("market_phase", "") or "").strip()
+    sequence_role = str(g.get("sequence_role", "") or "").strip().lower()
+
+    if market_phase == "Pre-Game":
+        if sequence_role == "early":
+            adjusted_score += BET_ALERT_PRE_EARLY_SCORE_BONUS
+        elif sequence_role == "leader":
+            adjusted_score -= BET_ALERT_PRE_LEADER_SCORE_PENALTY
+
+    return max(0, adjusted_score)
 
 COMBINED_CA_BUNDLE_PATH = None
 
@@ -1481,14 +1530,25 @@ def attach_position_data_and_score(
 
 
         # --- NEW: avoid overpriced favorites ---
-        MAX_ENTRY_PRICE = 0.80
+        MAX_ENTRY_PRICE = 0.67
 
+        try:
+            current_price_for_cap = float(g.get("current_price", 0) or 0)
+        except Exception:
+            current_price_for_cap = 0.0
 
-        if avg_trade_price > MAX_ENTRY_PRICE:
+        effective_price_for_cap = avg_trade_price
+        if current_price_for_cap > 0:
+            effective_price_for_cap = max(avg_trade_price, current_price_for_cap)
+
+        if effective_price_for_cap > MAX_ENTRY_PRICE:
             g["label"] = "PASS"
             g["score"] = 0
             g["stake_pct"] = 0
-            g["reason"] = "Price too high (poor risk/reward)"
+            g["reason"] = (
+                f"Price too high (poor risk/reward, cap={MAX_ENTRY_PRICE:.2f}, "
+                f"effective_price={round(effective_price_for_cap, 3)})"
+            )
             # --- NEW: market movement (chase) penalty ---
             movement = g.get("market_movement_cents")
 
@@ -3559,6 +3619,9 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
     except Exception:
         score = 0
 
+    score = apply_phase_sequence_score_adjustment(score, g)
+    g["score"] = score
+
     try:
         edge_pct = float(g.get("edge_pct", 0) or 0)
     except Exception:
@@ -4609,6 +4672,14 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
     except Exception:
         score = 0
 
+    hard_fail_reason = get_structural_hard_fail_reason(g)
+    if hard_fail_reason:
+        g["label"] = "PASS"
+        g["score"] = 0
+        g["stake_pct"] = 0
+        g["reason"] = f"hard-filter: {hard_fail_reason}"
+        return g
+
     soft_fail_reasons = []
 
     if total_notional < BET_ALERT_SOFT_MIN_TOTAL_NOTIONAL:
@@ -4616,7 +4687,6 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
 
     if size_ratio < BET_ALERT_SOFT_MIN_SIZE_RATIO:
         soft_fail_reasons.append("low_ratio")
-
     if leaderboard_roi is None or leaderboard_roi < BET_ALERT_SOFT_MIN_LEADERBOARD_ROI:
         soft_fail_reasons.append("low_roi")
 
