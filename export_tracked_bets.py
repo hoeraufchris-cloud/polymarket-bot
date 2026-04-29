@@ -130,13 +130,17 @@ def row_to_values(row_dict):
     return [row_dict.get(header, "") for header in RAW_HEADERS]
 
 
+def normalize_sheet_key_value(value):
+    return " ".join(str(value or "").strip().lower().split())
+
+
 def make_sheet_row_key_from_dict(row_dict):
     return "||".join([
-        str(row_dict.get("Date", "")).strip(),
-        str(row_dict.get("Market", "")).strip(),
-        str(row_dict.get("Bet", "")).strip(),
-        str(row_dict.get("Wallet", "")).strip(),
-        str(row_dict.get("Alert Price", "")).strip(),
+        normalize_sheet_key_value(row_dict.get("Date", "")),
+        normalize_sheet_key_value(row_dict.get("Market", "")),
+        normalize_sheet_key_value(row_dict.get("Bet", "")),
+        normalize_sheet_key_value(row_dict.get("Market Phase", "")),
+        normalize_sheet_key_value(row_dict.get("Wallet", "")),
     ])
 
 
@@ -145,14 +149,14 @@ def make_sheet_row_key_from_list(row_values, header_index):
         idx = header_index.get(header_name)
         if idx is None or idx >= len(row_values):
             return ""
-        return str(row_values[idx]).strip()
+        return row_values[idx]
 
     return "||".join([
-        get_value("Date"),
-        get_value("Market"),
-        get_value("Bet"),
-        get_value("Wallet"),
-        get_value("Alert Price"),
+        normalize_sheet_key_value(get_value("Date")),
+        normalize_sheet_key_value(get_value("Market")),
+        normalize_sheet_key_value(get_value("Bet")),
+        normalize_sheet_key_value(get_value("Market Phase")),
+        normalize_sheet_key_value(get_value("Wallet")),
     ])
 
 def load_google_sheets_credentials(scopes):
@@ -293,6 +297,13 @@ def main():
     deduped = dedupe_bets(bets)
     resolved_deduped = [bet for bet in deduped if bet.get("resolved") is True]
     rows = [to_row(bet) for bet in resolved_deduped]
+
+    row_key_map = {}
+    for row in rows:
+        row_key = make_sheet_row_key_from_dict(row)
+        if row_key:
+            row_key_map[row_key] = row
+    rows = list(row_key_map.values())
 
     print(f"About to write {len(rows)} resolved rows to {OUTPUT_FILE}")
     write_csv(rows)
