@@ -10,6 +10,87 @@ def log_alert(bet):
 
     with open("all_alerts.json", "w") as f:
         json.dump(data, f)
+
+def load_tracked_model_bets():
+    try:
+        with open(TRACKED_MODEL_BETS_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+    if isinstance(data, dict):
+        return data
+
+    return {}
+
+def save_tracked_model_bets(tracked_model_bets):
+    try:
+        with open(TRACKED_MODEL_BETS_PATH, "w") as f:
+            json.dump(tracked_model_bets, f, indent=2)
+    except Exception as e:
+        print(f"[Model tracking save error] {repr(e)}")
+
+
+def track_model_recommendation(recommendation, now_ts):
+    if not isinstance(recommendation, dict):
+        return False
+
+    recommendation_label = str(recommendation.get("recommendation", "") or "").strip().upper()
+    if recommendation_label not in {"BET", "LEAN"}:
+        return False
+
+    slug = str(recommendation.get("slug", "") or "").strip()
+    outcome = str(recommendation.get("outcome", "") or "").strip()
+
+    if not slug or not outcome:
+        return False
+
+    key = f"{slug}||{outcome}"
+    tracked_model_bets = load_tracked_model_bets()
+
+    if key in tracked_model_bets:
+        return False
+
+    tracked_model_bets[key] = {
+        "tracked_model_bet_key": key,
+        "source": "market_model",
+        "alert_ts": int(now_ts or time.time()),
+        "slug": slug,
+        "outcome": outcome,
+        "market": str(recommendation.get("market", "") or "").strip(),
+        "recommendation": recommendation_label,
+        "signal_stage": recommendation.get("signal_stage"),
+        "model_score": recommendation.get("model_score"),
+        "recommended_stake_pct": recommendation.get("recommended_stake_pct"),
+        "minutes_to_start": recommendation.get("minutes_to_start"),
+        "time_to_start_bucket": recommendation.get("time_to_start_bucket"),
+        "market_phase": recommendation.get("market_phase"),
+        "current_price_at_alert": recommendation.get("latest_current_price"),
+        "entry_price": recommendation.get("latest_current_price"),
+        "wallet_entry_price": recommendation.get("latest_wallet_entry_price"),
+        "latest_edge_pct": recommendation.get("latest_edge_pct"),
+        "unique_wallet_count": recommendation.get("unique_wallet_count"),
+        "leader_count": recommendation.get("leader_count"),
+        "early_count": recommendation.get("early_count"),
+        "follower_count": recommendation.get("follower_count"),
+        "total_notional": recommendation.get("total_notional"),
+        "max_size_ratio": recommendation.get("max_size_ratio"),
+        "avg_size_ratio": recommendation.get("avg_size_ratio"),
+        "max_followers": recommendation.get("max_followers"),
+        "max_consensus_score": recommendation.get("max_consensus_score"),
+        "avg_leaderboard_roi": recommendation.get("avg_leaderboard_roi"),
+        "event_start_time": recommendation.get("event_start_time"),
+        "since_last_buy_seconds": recommendation.get("since_last_buy_seconds"),
+        "resolved": False,
+        "result": None,
+        "winning_outcome": None,
+        "resolved_ts": None,
+        "resolution_price": None,
+    }
+
+    save_tracked_model_bets(tracked_model_bets)
+    return True
+
 import time
 import requests
 import urllib.request
@@ -77,7 +158,7 @@ PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
 HOURS_LOOKBACK = 48
-POLL_SECONDS = 60   
+POLL_SECONDS = 20   
 
 LEADERBOARD_WALLET_LIMIT = 50
 LEADERBOARD_WALLET_OFFSETS = [0 , 50 , 100]
@@ -116,6 +197,7 @@ TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
 ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
+TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -1088,17 +1170,27 @@ def update_wallet_profiles(wallet_profiles, accumulation_groups, scored_candidat
     return wallet_profiles
 
 def apply_tracked_results_to_wallet_profiles(wallet_profiles):
+    tracked_bets_data = {}
+
     try:
         with open(TRACKED_BETS_PATH, "r") as f:
-            tracked_bets = json.load(f)
+            loaded_tracked_bets = json.load(f)
+
+        if isinstance(loaded_tracked_bets, dict):
+            tracked_bets_data = loaded_tracked_bets
+        elif isinstance(loaded_tracked_bets, list):
+            tracked_bets_data = {
+                str(i): row
+                for i, row in enumerate(loaded_tracked_bets)
+                if isinstance(row, dict)
+            }
     except Exception:
-        tracked_bets = []
+        tracked_bets_data = {}
 
-    if isinstance(tracked_bets, dict):
-        tracked_bets = list(tracked_bets.values())
-    elif not isinstance(tracked_bets, list):
-        tracked_bets = []
-
+    tracked_bet_rows = [
+        row for row in tracked_bets_data.values()
+        if isinstance(row, dict)
+    ]
 
     for wallet in wallet_profiles:
         wallet_profiles[wallet]["resolved_bets"] = 0
@@ -1107,16 +1199,10 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
         wallet_profiles[wallet]["resolved_win_rate"] = None
         wallet_profiles[wallet]["results_confidence"] = 0.0
 
-
-    for row in tracked_bets:
-        if not isinstance(row, dict):
-            continue
-
-
+    for row in tracked_bet_rows:
         wallet = str(row.get("wallet", "") or "").strip().lower()
         if not wallet:
             continue
-
 
         if wallet not in wallet_profiles:
             wallet_profiles[wallet] = {
@@ -1141,38 +1227,30 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
                 "dynamic_weight": 1.0,
             }
 
-
         resolved = bool(row.get("resolved"))
         won = row.get("won")
         result = str(row.get("result", "") or "").strip().upper()
 
-
         if not resolved:
             continue
 
-
         wallet_profiles[wallet]["resolved_bets"] += 1
-
 
         if won is True or result == "WIN":
             wallet_profiles[wallet]["resolved_wins"] += 1
         elif won is False or result == "LOSS":
             wallet_profiles[wallet]["resolved_losses"] += 1
 
-
     for wallet, profile in wallet_profiles.items():
         resolved_bets = int(profile.get("resolved_bets", 0) or 0)
         resolved_wins = int(profile.get("resolved_wins", 0) or 0)
-
 
         if resolved_bets > 0:
             profile["resolved_win_rate"] = round((resolved_wins / resolved_bets) * 100, 1)
         else:
             profile["resolved_win_rate"] = None
 
-
         profile["results_confidence"] = round(min(1.0, resolved_bets / 20.0), 4)
-
 
     return wallet_profiles
 
@@ -6795,11 +6873,13 @@ if __name__ == "__main__":
     print(f"ALERTED_BETS_PATH: {ALERTED_BETS_PATH}")
     print(f"CLV_TRACKER_PATH: {CLV_TRACKER_PATH}")
     print(f"TRACKED_BETS_PATH: {TRACKED_BETS_PATH}")
+    print(f"TRACKED_MODEL_BETS_PATH: {TRACKED_MODEL_BETS_PATH}")
     print(f"SIGNAL_METRICS_HISTORY_PATH: {SIGNAL_METRICS_HISTORY_PATH}")
     print(f"SIGNAL_STAGE_TRACKER_PATH: {SIGNAL_STAGE_TRACKER_PATH}")
     print(f"Loaded alerted bets: {len(alerted_bets)}")
     print(f"Loaded CLV tracker rows: {len(clv_tracker)}")
     print(f"Loaded tracked bets: {len(tracked_bets)}")
+    print(f"Loaded tracked model bets: {len(load_tracked_model_bets())}")
     print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
     print(f"Loaded signal stage tracker rows: {len(signal_stage_tracker)}")
     wallet_profiles = init_wallet_profiles(TRACKED_WALLETS)
@@ -7163,6 +7243,12 @@ if __name__ == "__main__":
             market_model_recommendations = build_recommendations(recent_model_signal_metrics)
             save_recommendations_json(market_model_recommendations)
 
+            tracked_model_recommendation_count = 0
+
+            for recommendation in market_model_recommendations:
+                if track_model_recommendation(recommendation, result["now_ts"]):
+                    tracked_model_recommendation_count += 1
+
             market_model_early_watch_diagnostics = getattr(
                 build_recommendations,
                 "last_early_watch_diagnostics",
@@ -7191,7 +7277,26 @@ if __name__ == "__main__":
             print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
             print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
             print(f"Saved market model recommendations: {len(market_model_recommendations)}")
+            print(f"New model recommendations tracked this cycle: {tracked_model_recommendation_count}")
 
+            tracked_model_bets_summary = load_tracked_model_bets()
+            tracked_model_total = len(tracked_model_bets_summary)
+            tracked_model_resolved = sum(
+                1 for row in tracked_model_bets_summary.values()
+                if isinstance(row, dict) and row.get("resolved")
+            )
+            tracked_model_wins = sum(
+                1 for row in tracked_model_bets_summary.values()
+                if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "WIN"
+            )
+            tracked_model_losses = sum(
+                1 for row in tracked_model_bets_summary.values()
+                if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "LOSS"
+            )
+
+            print(f"Tracked model recommendations all-time: {tracked_model_total}")
+            print(f"Resolved model recommendations: {tracked_model_resolved}")
+            print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
             print("-" * 80)
             print("MARKET MODEL BUILD DEBUG")
             print("=" * 80)
