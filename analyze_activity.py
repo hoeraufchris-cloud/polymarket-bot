@@ -157,17 +157,22 @@ PUSHOVER_API_TOKEN = "agxdaaoicjeeba5pku3znj4i5eahtz"
 PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
-HOURS_LOOKBACK = 6
+HOURS_LOOKBACK = 12
 POLL_SECONDS = 20   
 
 LEADERBOARD_WALLET_LIMIT = 50
-LEADERBOARD_WALLET_OFFSETS = [0 , 50 , 100]
+LEADERBOARD_WALLET_OFFSETS = [0]
 
 TRACKED_WALLETS = []
 WALLET_WEIGHTS = {}
 
 ACTIVE_WALLET_FAILURE_COUNTS = {}
 ACTIVE_WALLET_MAX_FAILURES = 3
+
+PIPELINE_CYCLE_COUNT = 0
+CACHED_POSITIONS = []
+CACHED_POSITION_LOOKUP = {}
+POSITION_REFRESH_EVERY_N_CYCLES = 3
 
 CONSENSUS_UPGRADE_MIN_CLV = 1.0
 CONSENSUS_UPGRADE_MAX_AGE_SECONDS = 300
@@ -423,7 +428,7 @@ def fetch_json_url(url):
     if TRUSTSTORE_INJECTED:
         try:
             ssl_context = ssl.create_default_context()
-            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+            with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                 raw = response.read().decode("utf-8")
             return json.loads(raw)
         except Exception as e:
@@ -434,7 +439,7 @@ def fetch_json_url(url):
     if bundle_path:
         try:
             ssl_context = ssl.create_default_context(cafile=bundle_path)
-            with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+            with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                 raw = response.read().decode("utf-8")
             return json.loads(raw)
         except Exception as e:
@@ -442,7 +447,7 @@ def fetch_json_url(url):
 
     try:
         ssl_context = ssl.create_default_context()
-        with urllib.request.urlopen(req, timeout=20, context=ssl_context) as response:
+        with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
             raw = response.read().decode("utf-8")
         return json.loads(raw)
     except Exception as e:
@@ -5866,6 +5871,11 @@ def get_time_to_start_bucket(minutes_to_start):
 
 def run_pipeline(wallet_profiles, wallet_result_rows=None):
     global TRACKED_WALLETS
+    global PIPELINE_CYCLE_COUNT
+    global CACHED_POSITIONS
+    global CACHED_POSITION_LOOKUP
+
+    PIPELINE_CYCLE_COUNT += 1
 
     all_trades = []
 
@@ -5915,16 +5925,34 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
 
         real_candidates.append(g)
 
-    positions = []
+    should_refresh_positions = (
+        not CACHED_POSITION_LOOKUP
+        or PIPELINE_CYCLE_COUNT % POSITION_REFRESH_EVERY_N_CYCLES == 0
+    )
 
-    for wallet in TRACKED_WALLETS:
-        try:
-            wallet_positions = load_positions(wallet)
-            positions.extend(wallet_positions)
-        except Exception as e:
-            print(f"[Position fetch error] {wallet} -> {repr(e)}")
+    if should_refresh_positions:
+        positions = []
 
-    position_lookup = build_position_lookup(positions)
+        for wallet in TRACKED_WALLETS:
+            try:
+                wallet_positions = load_positions(wallet)
+                positions.extend(wallet_positions)
+            except Exception as e:
+                print(f"[Position fetch error] {wallet} -> {repr(e)}")
+
+        CACHED_POSITIONS = positions
+        CACHED_POSITION_LOOKUP = build_position_lookup(positions)
+        print(
+            f"[Positions] Refreshed this cycle "
+            f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
+        )
+    else:
+        print(
+            f"[Positions] Reusing cached positions "
+            f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
+        )
+
+    position_lookup = CACHED_POSITION_LOOKUP
     fair_price_lookup = build_fair_price_lookup(accumulation_groups)
     wallet_profiles = apply_tracked_results_to_wallet_profiles(wallet_profiles)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
@@ -6490,7 +6518,11 @@ def send_pushover_bet_alert(g):
         except (TypeError, ValueError):
             total_stake_display = leader_wallet_stake
 
-    edge_pct_display = f"{float(edge_pct):+.2f}".rstrip("0").rstrip(".")
+    try:
+        edge_pct_display = f"{float(edge_pct):+.2f}".rstrip("0").rstrip(".")
+    except Exception:
+        edge_pct_display = "N/A"
+
     followers_display = get_follower_count(g)
 
     try:
