@@ -158,7 +158,7 @@ PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
 HOURS_LOOKBACK = 6
-POLL_SECONDS = 20   
+POLL_SECONDS = 2
 
 LEADERBOARD_WALLET_LIMIT = 50
 LEADERBOARD_WALLET_OFFSETS = [0]
@@ -172,10 +172,11 @@ ACTIVE_WALLET_MAX_FAILURES = 3
 PIPELINE_CYCLE_COUNT = 0
 CACHED_POSITIONS = []
 CACHED_POSITION_LOOKUP = {}
-POSITION_REFRESH_EVERY_N_CYCLES = 5
-DEEP_DEBUG_EVERY_N_CYCLES = 5
-HEAVY_POSTPROCESS_EVERY_N_CYCLES = 5
+POSITION_REFRESH_EVERY_N_CYCLES = 10
+DEEP_DEBUG_EVERY_N_CYCLES = 999999
+HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
 ACTIVITY_BUCKET_COUNT = 2
+RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
 
 CONSENSUS_UPGRADE_MIN_CLV = 1.0
@@ -2919,25 +2920,26 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
         consensus_debug["upgraded_to_bet"] += 1
         upgraded.append(g)
 
-    print("CONSENSUS UPGRADE DEBUG")
-    print("-" * 80)
-    print(f"Total candidates checked:           {consensus_debug['total_candidates']}")
-    print(f"Missing consensus:                  {consensus_debug['no_consensus']}")
-    print(f"Bad role:                           {consensus_debug['bad_role']}")
-    print(f"Bad label:                          {consensus_debug['bad_label']}")
-    print(f"Not full consensus:                 {consensus_debug['not_full_consensus']}")
-    print(f"Too few wallets scored:             {consensus_debug['too_few_wallets_scored']}")
-    print(f"Weighted score too low:             {consensus_debug['weighted_score_too_low']}")
-    print(f"No leader/early contributor:        {consensus_debug['no_leader_or_early']}")
-    print(f"Quality contributors too low:       {consensus_debug['quality_contributors_too_low']}")
-    print(f"Size ratio too low:                 {consensus_debug['size_ratio_too_low']}")
-    print(f"Missing edge:                       {consensus_debug['missing_edge']}")
-    print(f"Edge too low:                       {consensus_debug['edge_too_low']}")
-    print(f"Negative market movement:           {consensus_debug['market_movement_negative']}")
-    print(f"Too old:                            {consensus_debug['too_old']}")
-    print(f"Consensus score too low:            {consensus_debug['consensus_score_too_low']}")
-    print(f"Upgraded to BET:                    {consensus_debug['upgraded_to_bet']}")
-    print("-" * 80)
+    if not RUNTIME_SUMMARY_ONLY:
+        print("CONSENSUS UPGRADE DEBUG")
+        print("-" * 80)
+        print(f"Total candidates checked:           {debug_counts['checked']}")
+        print(f"Missing consensus:                  {debug_counts['missing_consensus']}")
+        print(f"Bad role:                           {debug_counts['bad_role']}")
+        print(f"Bad label:                          {debug_counts['bad_label']}")
+        print(f"Not full consensus:                 {debug_counts['not_full_consensus']}")
+        print(f"Too few wallets scored:             {debug_counts['too_few_wallets_scored']}")
+        print(f"Weighted score too low:             {debug_counts['weighted_score_too_low']}")
+        print(f"No leader/early contributor:        {debug_counts['no_leader_or_early']}")
+        print(f"Quality contributors too low:       {debug_counts['quality_contributors_too_low']}")
+        print(f"Size ratio too low:                 {debug_counts['size_ratio_too_low']}")
+        print(f"Missing edge:                       {debug_counts['missing_edge']}")
+        print(f"Edge too low:                       {debug_counts['edge_too_low']}")
+        print(f"Negative market movement:           {debug_counts['negative_market_movement']}")
+        print(f"Too old:                            {debug_counts['too_old']}")
+        print(f"Consensus score too low:            {debug_counts['consensus_score_too_low']}")
+        print(f"Upgraded to BET:                    {debug_counts['upgraded']}")
+        print("-" * 80)
 
     return upgraded
     consensus_lookup = {}
@@ -6016,9 +6018,6 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     active_wallets = filter_active_wallets(wallet_profiles)
     gated_wallets = apply_wallet_stability_gating(wallet_profiles, active_wallets)
 
-    if gated_wallets:
-        TRACKED_WALLETS = gated_wallets
-
     consensus_diagnostics = build_consensus_diagnostics(
         accumulation_groups,
         scored_candidates
@@ -6979,23 +6978,23 @@ if __name__ == "__main__":
             )
             wallet_profiles = result["wallet_profiles"]
 
-            print("=" * 80)
-            print("ACTIVITY PIPELINE SUMMARY")
-            print(f"All trades loaded:        {len(result['all_trades'])}")
-            print(f"Recent trades kept:       {len(result['recent_trades'])}")
-            print(f"Valid BUY trades:         {len(result['valid_buy_trades'])}")
-            print(f"Accumulation groups:      {len(result['accumulation_groups'])}")
-            print(f"Scored candidates:        {len(result['scored_candidates'])}")
-            print(f"Filtered (buy_count):     {result['filtered_counts']['buy_count']}")
-            print(f"Filtered (paired):        {result['filtered_counts']['paired_recent']}")
-            print(f"Filtered (price range):   {result['filtered_counts']['price_range']}")
-            print(f"Active wallets retained:  {result['active_wallet_count']}")
-            print(f"Failure trackers active:  {len(result['active_wallet_failure_counts'])}")
-            print(f"Lookback hours:           {HOURS_LOOKBACK}")
-            print(f"Current timestamp:        {result['now_ts']}")
-            print(f"Cutoff timestamp:         {result['cutoff_ts']}")
-            print("=" * 80)
-
+            if not RUNTIME_SUMMARY_ONLY:
+                print("=" * 80)
+                print("ACTIVITY PIPELINE SUMMARY")
+                print(f"All trades loaded:        {len(result['all_trades'])}")
+                print(f"Recent trades kept:       {len(result['recent_trades'])}")
+                print(f"Valid BUY trades:         {len(result['valid_buy_trades'])}")
+                print(f"Accumulation groups:      {len(result['accumulation_groups'])}")
+                print(f"Scored candidates:        {len(result['scored_candidates'])}")
+                print(f"Filtered (buy_count):     {result['filtered_counts']['buy_count']}")
+                print(f"Filtered (paired):        {result['filtered_counts']['paired_recent']}")
+                print(f"Filtered (price range):   {result['filtered_counts']['price_range']}")
+                print(f"Active wallets retained:  {result['active_wallet_count']}")
+                print(f"Failure trackers active:  {len(result['active_wallet_failure_counts'])}")
+                print(f"Lookback hours:           {HOURS_LOOKBACK}")
+                print(f"Current timestamp:        {result['now_ts']}")
+                print(f"Cutoff timestamp:         {result['cutoff_ts']}")
+                print("=" * 80)
             if run_deep_debug:
                 print("WALLET PROFILE SUMMARY")
                 top_wallets = sorted(
@@ -7197,269 +7196,151 @@ if __name__ == "__main__":
                 }
             )
 
-            print("-" * 80)
-            print("=" * 80)
-            print("EARLY WATCH DIAGNOSTICS")
-            print("-" * 80)
-            print(f"Total candidates: {early_watch_diagnostics['total_candidates']}")
-            print(f"LEAN/BET candidates: {early_watch_diagnostics['lean_bet_candidates']}")
-            print(f"Single-wallet candidates: {early_watch_diagnostics['single_wallet_candidates']}")
-            print(f"Single-wallet high size ratio: {early_watch_diagnostics['single_wallet_high_size_ratio']}")
-            print(f"Single-wallet high notional: {early_watch_diagnostics['single_wallet_high_notional']}")
-            print(f"Single-wallet strong (ratio + notional): {early_watch_diagnostics['single_wallet_strong_candidates']}")
+            if not RUNTIME_SUMMARY_ONLY:
+                print("-" * 80)
+                print("=" * 80)
+                print("EARLY WATCH DIAGNOSTICS")
+                print("-" * 80)
+                print(f"Total candidates: {len(result['scored_candidates'])}")
+                print(f"LEAN/BET candidates: {len(model_history_candidates)}")
+                print(f"Single-wallet candidates: {early_watch_diagnostics.get('single_wallet_candidates', 0)}")
+                print(f"Single-wallet high size ratio: {early_watch_diagnostics.get('single_wallet_high_size_ratio', 0)}")
+                print(f"Single-wallet high notional: {early_watch_diagnostics.get('single_wallet_high_notional', 0)}")
+                print(f"Single-wallet strong (ratio + notional): {early_watch_diagnostics.get('single_wallet_strong', 0)}")
+                print(f"Multi-wallet candidates: {early_watch_diagnostics.get('multi_wallet_candidates', 0)}")
+                print(f"Multi-wallet high size ratio: {early_watch_diagnostics.get('multi_wallet_high_size_ratio', 0)}")
+                print(f"Multi-wallet high notional: {early_watch_diagnostics.get('multi_wallet_high_notional', 0)}")
+                print(f"Multi-wallet strong (ratio + notional): {early_watch_diagnostics.get('multi_wallet_strong', 0)}")
+                print("-" * 80)
 
-            print(f"Multi-wallet candidates: {early_watch_diagnostics['multi_wallet_candidates']}")
-            print(f"Multi-wallet high size ratio: {early_watch_diagnostics['multi_wallet_high_size_ratio']}")
-            print(f"Multi-wallet high notional: {early_watch_diagnostics['multi_wallet_high_notional']}")
-            print(f"Multi-wallet strong (ratio + notional): {early_watch_diagnostics['multi_wallet_strong_candidates']}")
-            print("-" * 80)
-            print("BET ALERT DECISION SUMMARY")
-            print("=" * 80)
-            print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
-            print(f"Cycle deduped away: {alert_decision_counts['cycle_deduped_away']}")
-            print(f"Model-history candidates: {alert_decision_counts['model_history_candidates']}")
-            print(f"Model-history recorded: {alert_decision_counts['model_history_recorded']}")
-            print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
-            print(f"Sent new bets - confirmed follow path: {alert_decision_counts['send_new_bet_confirmed_follow']}")
-            print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
-            print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
-            print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
-            print(f"Skipped new bets - weak: {alert_decision_counts['skip_new_bet_weak']}")
-            print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
-            print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
-            print(f"Skipped duplicate - price worse: {alert_decision_counts['skip_duplicate_price_worse']}")
+            if not RUNTIME_SUMMARY_ONLY:
+                print("BET ALERT DECISION SUMMARY")
+                print("=" * 80)
+                print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
+                print(f"Cycle deduped away: {alert_decision_counts['cycle_deduped_away']}")
+                print(f"Model-history candidates: {alert_decision_counts['model_history_candidates']}")
+                print(f"Model-history recorded: {alert_decision_counts['model_history_recorded']}")
+                print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
+                print(f"Sent new bets - confirmed follow path: {alert_decision_counts['send_new_bet_confirmed_follow']}")
+                print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
+                print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
+                print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
+                print(f"Skipped new bets - weak: {alert_decision_counts['skip_new_bet_weak']}")
+                print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
+                print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
+                print(f"Skipped duplicate - price worse: {alert_decision_counts['skip_duplicate_price_worse']}")
+                print("-" * 80)
 
-            print("-" * 80)
-            print("BET AGE SUMMARY - POST-DEDUP BET CANDIDATES")
-            print("=" * 80)
-            print(f"Count: {len(bet_candidates)}")
-            print(f"Avg age (s): {raw_bet_age_summary['avg_age_seconds']}")
-            print(f"Median age (s): {raw_bet_age_summary['median_age_seconds']}")
-            print(f"00-60s: {raw_bet_age_summary['bucket_counts']['00-60s']}")
-            print(f"01-03m: {raw_bet_age_summary['bucket_counts']['01-03m']}")
-            print(f"03-05m: {raw_bet_age_summary['bucket_counts']['03-05m']}")
-            print(f"05-10m: {raw_bet_age_summary['bucket_counts']['05-10m']}")
-            print(f"10-20m: {raw_bet_age_summary['bucket_counts']['10-20m']}")
-            print(f"20m+: {raw_bet_age_summary['bucket_counts']['20m+']}")
-            print(f"Unknown: {raw_bet_age_summary['bucket_counts']['unknown']}")
+                print("BET AGE SUMMARY - POST-DEDUP BET CANDIDATES")
+                print("=" * 80)
+                print(f"Count: {len(bet_candidates)}")
+                print(f"Avg age (s): {raw_bet_age_summary['avg_age_seconds']}")
+                print(f"Median age (s): {raw_bet_age_summary['median_age_seconds']}")
+                print(f"00-60s: {raw_bet_age_summary['bucket_counts']['00-60s']}")
+                print(f"01-03m: {raw_bet_age_summary['bucket_counts']['01-03m']}")
+                print(f"03-05m: {raw_bet_age_summary['bucket_counts']['03-05m']}")
+                print(f"05-10m: {raw_bet_age_summary['bucket_counts']['05-10m']}")
+                print(f"10-20m: {raw_bet_age_summary['bucket_counts']['10-20m']}")
+                print(f"20m+: {raw_bet_age_summary['bucket_counts']['20m+']}")
+                print(f"Unknown: {raw_bet_age_summary['bucket_counts']['unknown']}")
 
-            print("-" * 80)
-            print("BET AGE SUMMARY - SENT ALERTS")
-            print("=" * 80)
-            print(f"Count: {len(new_bet_alerts)}")
-            print(f"Avg age (s): {sent_bet_age_summary['avg_age_seconds']}")
-            print(f"Median age (s): {sent_bet_age_summary['median_age_seconds']}")
-            print(f"00-60s: {sent_bet_age_summary['bucket_counts']['00-60s']}")
-            print(f"01-03m: {sent_bet_age_summary['bucket_counts']['01-03m']}")
-            print(f"03-05m: {sent_bet_age_summary['bucket_counts']['03-05m']}")
-            print(f"05-10m: {sent_bet_age_summary['bucket_counts']['05-10m']}")
-            print(f"10-20m: {sent_bet_age_summary['bucket_counts']['10-20m']}")
-            print(f"20m+: {sent_bet_age_summary['bucket_counts']['20m+']}")
-            print(f"Unknown: {sent_bet_age_summary['bucket_counts']['unknown']}")
-            print("-" * 80)
-            print("NOTIONAL SIZE DISTRIBUTION (POST-DEDUP BET CANDIDATES)")
-            print("=" * 80)
-            print(f"Avg: {notional_summary['avg']}")
-            print(f"Median: {notional_summary['median']}")
-            for k, v in notional_summary["bucket_counts"].items():
-                print(f"{k}: {v}")
+                print("-" * 80)
+                print("BET AGE SUMMARY - SENT ALERTS")
+                print("=" * 80)
+                print(f"Count: {len(new_bet_alerts)}")
+                print(f"Avg age (s): {sent_bet_age_summary['avg_age_seconds']}")
+                print(f"Median age (s): {sent_bet_age_summary['median_age_seconds']}")
+                print(f"00-60s: {sent_bet_age_summary['bucket_counts']['00-60s']}")
+                print(f"01-03m: {sent_bet_age_summary['bucket_counts']['01-03m']}")
+                print(f"03-05m: {sent_bet_age_summary['bucket_counts']['03-05m']}")
+                print(f"05-10m: {sent_bet_age_summary['bucket_counts']['05-10m']}")
+                print(f"10-20m: {sent_bet_age_summary['bucket_counts']['10-20m']}")
+                print(f"20m+: {sent_bet_age_summary['bucket_counts']['20m+']}")
+                print(f"Unknown: {sent_bet_age_summary['bucket_counts']['unknown']}")
+                print("-" * 80)
+                print("NOTIONAL SIZE DISTRIBUTION (POST-DEDUP BET CANDIDATES)")
+                print("=" * 80)
+                print(f"Avg: {notional_summary['avg']}")
+                print(f"Median: {notional_summary['median']}")
+                for k, v in notional_summary["bucket_counts"].items():
+                    print(f"{k}: {v}")
 
-            print("-" * 80)
-            print("SIZE RATIO DISTRIBUTION")
-            print("=" * 80)
-            print(f"Avg: {ratio_summary['avg']}")
-            print(f"Median: {ratio_summary['median']}")
-            for k, v in ratio_summary["bucket_counts"].items():
-                print(f"{k}: {v}")
+                print("-" * 80)
+                print("SIZE RATIO DISTRIBUTION")
+                print("=" * 80)
+                print(f"Avg: {ratio_summary['avg']}")
+                print(f"Median: {ratio_summary['median']}")
+                for k, v in ratio_summary["bucket_counts"].items():
+                    print(f"{k}: {v}")
 
-            print("-" * 80)
-            print("ROI DISTRIBUTION")
-            print("=" * 80)
-            print(f"Avg: {roi_summary['avg']}")
-            print(f"Median: {roi_summary['median']}")
-            for k, v in roi_summary["bucket_counts"].items():
-                print(f"{k}: {v}")
-            if run_heavy_postprocess:
-                clv_summary = update_clv_tracker(
-                    clv_tracker,
-                    result["scored_candidates"],
-                    result["now_ts"],
+                print("-" * 80)
+                print("ROI DISTRIBUTION")
+                print("=" * 80)
+                print(f"Avg: {roi_summary['avg']}")
+                print(f"Median: {roi_summary['median']}")
+                for k, v in roi_summary["bucket_counts"].items():
+                    print(f"{k}: {v}")
+
+            if not RUNTIME_SUMMARY_ONLY:
+                print("-" * 80)
+                print("MARKET MODEL SUMMARY")
+                print("=" * 80)
+                print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
+                print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
+                print(f"Saved market model recommendations: {len(market_model_recommendations)}")
+                print(f"New model recommendations tracked this cycle: {tracked_model_recommendation_count}")
+
+                tracked_model_bets_summary = load_tracked_model_bets()
+                tracked_model_total = len(tracked_model_bets_summary)
+                tracked_model_resolved = sum(
+                    1 for row in tracked_model_bets_summary.values()
+                    if isinstance(row, dict) and row.get("resolved")
                 )
-                tracked_bet_summary = update_tracked_bet_results(
-                    tracked_bets,
-                    result["now_ts"],
+                tracked_model_wins = sum(
+                    1 for row in tracked_model_bets_summary.values()
+                    if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "WIN"
                 )
-                save_clv_tracker(clv_tracker)
-                save_tracked_bets(tracked_bets)
-                save_alerted_bets(alerted_bets)
-                save_signal_metrics_history(signal_metrics_history)
-
-                recent_model_signal_metrics = filter_recent_signal_metrics_rows(
-                    signal_metrics_history,
-                    MODEL_HISTORY_LOOKBACK_HOURS,
-                )
-                market_model_recommendations = build_recommendations(recent_model_signal_metrics)
-                save_recommendations_json(market_model_recommendations)
-
-                tracked_model_recommendation_count = 0
-
-                for recommendation in market_model_recommendations:
-                    if track_model_recommendation(recommendation, result["now_ts"]):
-                        tracked_model_recommendation_count += 1
-
-                market_model_early_watch_diagnostics = getattr(
-                    build_recommendations,
-                    "last_early_watch_diagnostics",
-                    {},
-                )
-                market_model_debug_counts = getattr(
-                    build_recommendations,
-                    "last_debug_counts",
-                    {},
+                tracked_model_losses = sum(
+                    1 for row in tracked_model_bets_summary.values()
+                    if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "LOSS"
                 )
 
-                signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
-                    signal_stage_tracker,
-                    market_model_recommendations,
-                    tracked_bets,
-                    clv_tracker,
-                    result["now_ts"],
-                )
+                print(f"Tracked model recommendations all-time: {tracked_model_total}")
+                print(f"Resolved model recommendations: {tracked_model_resolved}")
+                print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
+                print("-" * 80)
+                print("MARKET MODEL BUILD DEBUG")
+                print("=" * 80)
+                print(f"Grouped markets: {market_model_debug_counts.get('grouped_markets', 0)}")
+                print(f"Snapshots built: {market_model_debug_counts.get('snapshot_built', 0)}")
+                print(f"Skipped - no snapshot: {market_model_debug_counts.get('skipped_no_snapshot', 0)}")
+                print(f"Skipped - bad minutes: {market_model_debug_counts.get('skipped_bad_minutes', 0)}")
+                print(f"Skipped - below window: {market_model_debug_counts.get('skipped_below_window', 0)}")
+                print(f"Skipped - above window: {market_model_debug_counts.get('skipped_above_window', 0)}")
+                print(f"Skipped - no model output: {market_model_debug_counts.get('skipped_no_model_output', 0)}")
+                print(f"Classified early_watch: {market_model_debug_counts.get('classified_early_watch', 0)}")
+                print(f"Classified early_watch_shadow: {market_model_debug_counts.get('classified_early_watch_shadow', 0)}")
+                print(f"Classified early_watch_shadow_size_ratio: {market_model_debug_counts.get('classified_early_watch_shadow_size_ratio', 0)}")
+                print(f"Classified confirmed: {market_model_debug_counts.get('classified_confirmed', 0)}")
+                print(f"Classified discard: {market_model_debug_counts.get('classified_discard', 0)}")
 
-                save_signal_stage_tracker(signal_stage_tracker)
-                signal_stage_performance_summary = summarize_signal_stage_tracker(signal_stage_tracker)
-            else:
-                clv_summary = {
-                    "tracked": len(clv_tracker),
-                    "ready": 0,
-                    "positive": 0,
-                    "avg_snapshot_clv_cents": 0.0,
-                }
-                tracked_bet_summary = {
-                    "tracked": len(tracked_bets),
-                    "resolved": 0,
-                    "wins": 0,
-                    "losses": 0,
-                    "newly_resolved": 0,
-                }
-                recent_model_signal_metrics = []
-                market_model_recommendations = []
-                tracked_model_recommendation_count = 0
+                discard_reason_counts = market_model_debug_counts.get("discard_reason_counts", {})
+                if discard_reason_counts:
+                    print("Discard reasons:")
+                    for reason, count in sorted(discard_reason_counts.items(), key=lambda x: (-x[1], x[0])):
+                        print(f"  {reason}: {count}")
+
+            print("-" * 80)
+            market_model_early_watch_diagnostics = locals().get("market_model_early_watch_diagnostics")
+
+            if not isinstance(market_model_early_watch_diagnostics, dict):
+                market_model_early_watch_diagnostics = locals().get("early_watch_diagnostics")
+
+            if not isinstance(market_model_early_watch_diagnostics, dict):
                 market_model_early_watch_diagnostics = {}
-                market_model_debug_counts = {}
-                signal_stage_tracker_summary = {
-                    "tracker_rows": len(signal_stage_tracker),
-                    "active_rows": 0,
-                    "newly_seen_early_watch": 0,
-                    "newly_seen_confirmed": 0,
-                    "newly_transitioned": 0,
-                    "transitioned_total": 0,
-                }
-                signal_stage_performance_summary = {
-                    "early_watch_only": {
-                        "row_count": 0,
-                        "active_count": 0,
-                        "tracked_alert_count": 0,
-                        "resolved_alert_count": 0,
-                        "win_count": 0,
-                        "loss_count": 0,
-                        "win_rate_pct": None,
-                        "clv_tracked_count": 0,
-                        "clv_ready_count": 0,
-                        "clv_positive_count": 0,
-                        "positive_snapshot_clv_rate": None,
-                        "avg_snapshot_clv_cents": None,
-                        "transition_count": 0,
-                        "avg_transition_minutes": None,
-                    },
-                    "transitioned": {
-                        "row_count": 0,
-                        "active_count": 0,
-                        "tracked_alert_count": 0,
-                        "resolved_alert_count": 0,
-                        "win_count": 0,
-                        "loss_count": 0,
-                        "win_rate_pct": None,
-                        "clv_tracked_count": 0,
-                        "clv_ready_count": 0,
-                        "clv_positive_count": 0,
-                        "positive_snapshot_clv_rate": None,
-                        "avg_snapshot_clv_cents": None,
-                        "transition_count": 0,
-                        "avg_transition_minutes": None,
-                    },
-                    "confirmed_only": {
-                        "row_count": 0,
-                        "active_count": 0,
-                        "tracked_alert_count": 0,
-                        "resolved_alert_count": 0,
-                        "win_count": 0,
-                        "loss_count": 0,
-                        "win_rate_pct": None,
-                        "clv_tracked_count": 0,
-                        "clv_ready_count": 0,
-                        "clv_positive_count": 0,
-                        "positive_snapshot_clv_rate": None,
-                        "avg_snapshot_clv_cents": None,
-                        "transition_count": 0,
-                        "avg_transition_minutes": None,
-                    },
-                    "total_rows": 0,
-                }
-                save_alerted_bets(alerted_bets)
-                save_tracked_bets(tracked_bets)
 
-            print("-" * 80)
-            print("MARKET MODEL SUMMARY")
-            print("=" * 80)
-            print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
-            print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
-            print(f"Saved market model recommendations: {len(market_model_recommendations)}")
-            print(f"New model recommendations tracked this cycle: {tracked_model_recommendation_count}")
-
-            tracked_model_bets_summary = load_tracked_model_bets()
-            tracked_model_total = len(tracked_model_bets_summary)
-            tracked_model_resolved = sum(
-                1 for row in tracked_model_bets_summary.values()
-                if isinstance(row, dict) and row.get("resolved")
-            )
-            tracked_model_wins = sum(
-                1 for row in tracked_model_bets_summary.values()
-                if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "WIN"
-            )
-            tracked_model_losses = sum(
-                1 for row in tracked_model_bets_summary.values()
-                if isinstance(row, dict) and str(row.get("result", "") or "").upper() == "LOSS"
-            )
-
-            print(f"Tracked model recommendations all-time: {tracked_model_total}")
-            print(f"Resolved model recommendations: {tracked_model_resolved}")
-            print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
-            print("-" * 80)
-            print("MARKET MODEL BUILD DEBUG")
-            print("=" * 80)
-            print(f"Grouped markets: {market_model_debug_counts.get('grouped_markets', 0)}")
-            print(f"Snapshots built: {market_model_debug_counts.get('snapshot_built', 0)}")
-            print(f"Skipped - no snapshot: {market_model_debug_counts.get('skipped_no_snapshot', 0)}")
-            print(f"Skipped - bad minutes: {market_model_debug_counts.get('skipped_bad_minutes', 0)}")
-            print(f"Skipped - below window: {market_model_debug_counts.get('skipped_below_window', 0)}")
-            print(f"Skipped - above window: {market_model_debug_counts.get('skipped_above_window', 0)}")
-            print(f"Skipped - no model output: {market_model_debug_counts.get('skipped_no_model_output', 0)}")
-            print(f"Classified early_watch: {market_model_debug_counts.get('classified_early_watch', 0)}")
-            print(f"Classified early_watch_shadow: {market_model_debug_counts.get('classified_early_watch_shadow', 0)}")
-            print(f"Classified early_watch_shadow_size_ratio: {market_model_debug_counts.get('classified_early_watch_shadow_size_ratio', 0)}")
-            print(f"Classified confirmed: {market_model_debug_counts.get('classified_confirmed', 0)}")
-            print(f"Classified discard: {market_model_debug_counts.get('classified_discard', 0)}")
-
-            discard_reason_counts = market_model_debug_counts.get("discard_reason_counts", {})
-            if discard_reason_counts:
-                print("Discard reasons:")
-                for reason, count in sorted(discard_reason_counts.items(), key=lambda x: (-x[1], x[0])):
-                    print(f"  {reason}: {count}")
-
-            print("-" * 80)
             print("EARLY WATCH DIAGNOSTICS - MARKET SNAPSHOT LAYER")
-            print("=" * 80)
+            print("=" * 60)
             print(f"Total snapshots: {market_model_early_watch_diagnostics.get('total_snapshots', 0)}")
             print(f"In-window snapshots: {market_model_early_watch_diagnostics.get('in_window_snapshots', 0)}")
             print(f"Single-wallet snapshots: {market_model_early_watch_diagnostics.get('single_wallet_snapshots', 0)}")
@@ -7473,6 +7354,31 @@ if __name__ == "__main__":
             print(f"Classified early_watch: {market_model_early_watch_diagnostics.get('classified_early_watch', 0)}")
             print(f"Classified confirmed: {market_model_early_watch_diagnostics.get('classified_confirmed', 0)}")
             print(f"Classified discard: {market_model_early_watch_diagnostics.get('classified_discard', 0)}")
+
+            signal_stage_tracker_summary = locals().get("signal_stage_tracker_summary")
+
+            tracker_rows_count = 0
+
+            if isinstance(signal_stage_tracker, dict):
+                tracker_rows_count = len(signal_stage_tracker)
+            elif isinstance(signal_stage_tracker, list):
+                tracker_rows_count = len(signal_stage_tracker)
+
+            default_signal_stage_tracker_summary = {
+                "tracker_rows": tracker_rows_count,
+                "newly_seen_early_watch": 0,
+                "newly_seen_confirmed": 0,
+                "promoted_to_early_watch": 0,
+                "promoted_to_confirmed": 0,
+                "discarded": 0,
+                "unchanged": 0,
+            }
+
+            if not isinstance(signal_stage_tracker_summary, dict):
+                signal_stage_tracker_summary = default_signal_stage_tracker_summary
+            else:
+                for k, v in default_signal_stage_tracker_summary.items():
+                    signal_stage_tracker_summary.setdefault(k, v)
 
             print(f"Signal stage tracker rows: {signal_stage_tracker_summary['tracker_rows']}")
             print(f"New early_watch rows this cycle: {signal_stage_tracker_summary['newly_seen_early_watch']}")
@@ -7574,22 +7480,23 @@ if __name__ == "__main__":
             print("-" * 80)
             wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
 
-            print("TRACKED BET RESULTS BY WALLET")
-            print("=" * 80)
-            if not wallet_result_rows:
-                print("No tracked bets by wallet yet.")
-            else:
-                for row in wallet_result_rows:
-                    print("-" * 80)
-                    print(f"Wallet: {row['wallet']}")
-                    print(f"Tracked bets: {row['tracked_bets']}")
-                    print(f"Resolved bets: {row['resolved']}")
-                    print(f"Wins: {row['wins']}")
-                    print(f"Losses: {row['losses']}")
-                    print(f"Win rate: {row['win_rate_pct']}")
-                    print(f"Avg edge at alert: {row['avg_edge_pct_at_alert']}")
-                    print(f"Avg instant CLV at alert: {row['avg_instant_clv_cents_at_alert']}")
-                print("-" * 80)
+            if not RUNTIME_SUMMARY_ONLY:
+                print("TRACKED BET RESULTS BY WALLET")
+                print("=" * 80)
+                if not wallet_result_rows:
+                    print("No tracked bets by wallet yet.")
+                else:
+                    for row in wallet_result_rows:
+                        print("-" * 80)
+                        print(f"Wallet: {row['wallet']}")
+                        print(f"Tracked bets: {row['tracked_bets']}")
+                        print(f"Resolved bets: {row['resolved']}")
+                        print(f"Wins: {row['wins']}")
+                        print(f"Losses: {row['losses']}")
+                        print(f"Win rate: {row['win_rate_pct']}")
+                        print(f"Avg edge at alert: {row['avg_edge_pct_at_alert']}")
+                        print(f"Avg instant CLV at alert: {row['avg_instant_clv_cents_at_alert']}")
+                        print("-" * 80)
 
             if run_deep_debug:
                 print_consensus(result["consensus_list"])
