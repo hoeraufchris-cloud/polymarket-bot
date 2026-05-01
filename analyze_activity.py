@@ -157,7 +157,7 @@ PUSHOVER_API_TOKEN = "agxdaaoicjeeba5pku3znj4i5eahtz"
 PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
-HOURS_LOOKBACK = 12
+HOURS_LOOKBACK = 6
 POLL_SECONDS = 20   
 
 LEADERBOARD_WALLET_LIMIT = 50
@@ -172,7 +172,11 @@ ACTIVE_WALLET_MAX_FAILURES = 3
 PIPELINE_CYCLE_COUNT = 0
 CACHED_POSITIONS = []
 CACHED_POSITION_LOOKUP = {}
-POSITION_REFRESH_EVERY_N_CYCLES = 3
+POSITION_REFRESH_EVERY_N_CYCLES = 5
+DEEP_DEBUG_EVERY_N_CYCLES = 5
+HEAVY_POSTPROCESS_EVERY_N_CYCLES = 5
+ACTIVITY_BUCKET_COUNT = 2
+MAIN_LOOP_CYCLE_COUNT = 0
 
 CONSENSUS_UPGRADE_MIN_CLV = 1.0
 CONSENSUS_UPGRADE_MAX_AGE_SECONDS = 300
@@ -5879,7 +5883,25 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
 
     all_trades = []
 
-    for wallet in TRACKED_WALLETS:
+    if ACTIVITY_BUCKET_COUNT <= 1:
+        wallets_this_cycle = list(TRACKED_WALLETS)
+        activity_bucket_index = 0
+    else:
+        activity_bucket_index = (PIPELINE_CYCLE_COUNT - 1) % ACTIVITY_BUCKET_COUNT
+        wallets_this_cycle = [
+            wallet
+            for idx, wallet in enumerate(TRACKED_WALLETS)
+            if idx % ACTIVITY_BUCKET_COUNT == activity_bucket_index
+        ]
+
+    print(
+        f"[Activity] cycle={PIPELINE_CYCLE_COUNT} "
+        f"bucket={activity_bucket_index + 1}/{ACTIVITY_BUCKET_COUNT} "
+        f"wallets_this_cycle={len(wallets_this_cycle)} "
+        f"tracked_wallets_total={len(TRACKED_WALLETS)}"
+    )
+
+    for wallet in wallets_this_cycle:
         try:
             wallet_trades = load_activity(wallet)
             all_trades.extend(wallet_trades)
@@ -6938,6 +6960,10 @@ if __name__ == "__main__":
     while True:
         cycle_bet_alerts = []
         rejected_candidates = []
+        MAIN_LOOP_CYCLE_COUNT += 1
+        run_deep_debug = (MAIN_LOOP_CYCLE_COUNT % DEEP_DEBUG_EVERY_N_CYCLES == 0)
+        run_heavy_postprocess = (MAIN_LOOP_CYCLE_COUNT % HEAVY_POSTPROCESS_EVERY_N_CYCLES == 0)
+
         try:
             preload_tracked_bet_summary = update_tracked_bet_results(
                 tracked_bets,
@@ -6970,47 +6996,46 @@ if __name__ == "__main__":
             print(f"Cutoff timestamp:         {result['cutoff_ts']}")
             print("=" * 80)
 
-            print("WALLET PROFILE SUMMARY")
-            top_wallets = sorted(
-                result["wallet_profiles"].values(),
-                key=lambda x: (
-                    float(x.get("dynamic_weight", 1.0) or 1.0),
-                    int(x.get("clv_observations", 0) or 0),
-                    int(x.get("evaluated_clusters", 0) or 0),
-                ),
-                reverse=True,
-            )[:15]
+            if run_deep_debug:
+                print("WALLET PROFILE SUMMARY")
+                top_wallets = sorted(
+                    result["wallet_profiles"].values(),
+                    key=lambda x: (
+                        float(x.get("dynamic_weight", 1.0) or 1.0),
+                        int(x.get("clv_observations", 0) or 0),
+                        int(x.get("evaluated_clusters", 0) or 0),
+                    ),
+                    reverse=True,
+                )[:10]
 
-            for profile in top_wallets:
-                print("-" * 80)
-                print(f"Wallet:              {profile['wallet']}")
-                print(f"Evaluated trades:    {profile['evaluated_trades']}")
-                print(f"Evaluated clusters:  {profile['evaluated_clusters']}")
-                print(f"CLV observations:    {profile['clv_observations']}")
-                print(f"Avg forward CLV:     {profile['avg_forward_clv']}")
-                print(f"Positive CLV rate:   {profile['positive_clv_rate']}")
-                print(f"Leader count: {profile['leader_count']}")
-                print(f"Early count: {profile['early_count']}")
-                print(f"Follower count: {profile['follower_count']}")
-                print(f"Paired count: {profile['paired_count']}")
-                print(f"Noise count: {profile['noise_count']}")
-                print(f"Confidence: {profile['confidence']}")
-                resolved_bets_display = profile.get("resolved_bets", 0)
-                resolved_win_rate_display = profile.get("resolved_win_rate", None)
-                results_confidence_display = profile.get("results_confidence", 0.0)
+                for profile in top_wallets:
+                    print("-" * 80)
+                    print(f"Wallet:              {profile['wallet']}")
+                    print(f"Evaluated trades:    {profile['evaluated_trades']}")
+                    print(f"Evaluated clusters:  {profile['evaluated_clusters']}")
+                    print(f"CLV observations:    {profile['clv_observations']}")
+                    print(f"Avg forward CLV:     {profile['avg_forward_clv']}")
+                    print(f"Positive CLV rate:   {profile['positive_clv_rate']}")
+                    print(f"Leader count: {profile['leader_count']}")
+                    print(f"Early count: {profile['early_count']}")
+                    print(f"Follower count: {profile['follower_count']}")
+                    print(f"Paired count: {profile['paired_count']}")
+                    print(f"Noise count: {profile['noise_count']}")
+                    print(f"Confidence: {profile['confidence']}")
+                    resolved_bets_display = profile.get("resolved_bets", 0)
+                    resolved_win_rate_display = profile.get("resolved_win_rate", None)
+                    results_confidence_display = profile.get("results_confidence", 0.0)
 
+                    if resolved_win_rate_display is None:
+                        resolved_win_rate_str = "N/A"
+                    else:
+                        resolved_win_rate_str = round(float(resolved_win_rate_display), 1)
 
-                if resolved_win_rate_display is None:
-                    resolved_win_rate_str = "N/A"
-                else:
-                    resolved_win_rate_str = round(float(resolved_win_rate_display), 1)
-
-
-                print(f"Tracked bet resolved: {resolved_bets_display}")
-                print(f"Tracked bet win rate %: {resolved_win_rate_str}")
-                print(f"Tracked bet results confidence: {results_confidence_display}")
-                print(f"Dynamic weight: {profile.get('dynamic_weight', 1.0)}")
-            print("=" * 80)
+                    print(f"Tracked bet resolved: {resolved_bets_display}")
+                    print(f"Tracked bet win rate %: {resolved_win_rate_str}")
+                    print(f"Tracked bet results confidence: {results_confidence_display}")
+                    print(f"Dynamic weight: {profile.get('dynamic_weight', 1.0)}")
+                print("=" * 80)
 
             raw_bet_candidates = [
                 g for g in result["scored_candidates"]
@@ -7254,54 +7279,135 @@ if __name__ == "__main__":
             print(f"Median: {roi_summary['median']}")
             for k, v in roi_summary["bucket_counts"].items():
                 print(f"{k}: {v}")
-            clv_summary = update_clv_tracker(
-                clv_tracker,
-                result["scored_candidates"],
-                result["now_ts"],
-            )
-            tracked_bet_summary = update_tracked_bet_results(
-                tracked_bets,
-                result["now_ts"],
-            )
-            save_clv_tracker(clv_tracker)
-            save_tracked_bets(tracked_bets)
-            save_alerted_bets(alerted_bets)
-            save_signal_metrics_history(signal_metrics_history)
+            if run_heavy_postprocess:
+                clv_summary = update_clv_tracker(
+                    clv_tracker,
+                    result["scored_candidates"],
+                    result["now_ts"],
+                )
+                tracked_bet_summary = update_tracked_bet_results(
+                    tracked_bets,
+                    result["now_ts"],
+                )
+                save_clv_tracker(clv_tracker)
+                save_tracked_bets(tracked_bets)
+                save_alerted_bets(alerted_bets)
+                save_signal_metrics_history(signal_metrics_history)
 
-            recent_model_signal_metrics = filter_recent_signal_metrics_rows(
-                signal_metrics_history,
-                MODEL_HISTORY_LOOKBACK_HOURS,
-            )
-            market_model_recommendations = build_recommendations(recent_model_signal_metrics)
-            save_recommendations_json(market_model_recommendations)
+                recent_model_signal_metrics = filter_recent_signal_metrics_rows(
+                    signal_metrics_history,
+                    MODEL_HISTORY_LOOKBACK_HOURS,
+                )
+                market_model_recommendations = build_recommendations(recent_model_signal_metrics)
+                save_recommendations_json(market_model_recommendations)
 
-            tracked_model_recommendation_count = 0
+                tracked_model_recommendation_count = 0
 
-            for recommendation in market_model_recommendations:
-                if track_model_recommendation(recommendation, result["now_ts"]):
-                    tracked_model_recommendation_count += 1
+                for recommendation in market_model_recommendations:
+                    if track_model_recommendation(recommendation, result["now_ts"]):
+                        tracked_model_recommendation_count += 1
 
-            market_model_early_watch_diagnostics = getattr(
-                build_recommendations,
-                "last_early_watch_diagnostics",
-                {},
-            )
-            market_model_debug_counts = getattr(
-                build_recommendations,
-                "last_debug_counts",
-                {},
-            )
+                market_model_early_watch_diagnostics = getattr(
+                    build_recommendations,
+                    "last_early_watch_diagnostics",
+                    {},
+                )
+                market_model_debug_counts = getattr(
+                    build_recommendations,
+                    "last_debug_counts",
+                    {},
+                )
 
-            signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
-                signal_stage_tracker,
-                market_model_recommendations,
-                tracked_bets,
-                clv_tracker,
-                result["now_ts"],
-            )
-        
-            save_signal_stage_tracker(signal_stage_tracker)
-            signal_stage_performance_summary = summarize_signal_stage_tracker(signal_stage_tracker)
+                signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
+                    signal_stage_tracker,
+                    market_model_recommendations,
+                    tracked_bets,
+                    clv_tracker,
+                    result["now_ts"],
+                )
+
+                save_signal_stage_tracker(signal_stage_tracker)
+                signal_stage_performance_summary = summarize_signal_stage_tracker(signal_stage_tracker)
+            else:
+                clv_summary = {
+                    "tracked": len(clv_tracker),
+                    "ready": 0,
+                    "positive": 0,
+                    "avg_snapshot_clv_cents": 0.0,
+                }
+                tracked_bet_summary = {
+                    "tracked": len(tracked_bets),
+                    "resolved": 0,
+                    "wins": 0,
+                    "losses": 0,
+                    "newly_resolved": 0,
+                }
+                recent_model_signal_metrics = []
+                market_model_recommendations = []
+                tracked_model_recommendation_count = 0
+                market_model_early_watch_diagnostics = {}
+                market_model_debug_counts = {}
+                signal_stage_tracker_summary = {
+                    "tracker_rows": len(signal_stage_tracker),
+                    "active_rows": 0,
+                    "newly_seen_early_watch": 0,
+                    "newly_seen_confirmed": 0,
+                    "newly_transitioned": 0,
+                    "transitioned_total": 0,
+                }
+                signal_stage_performance_summary = {
+                    "early_watch_only": {
+                        "row_count": 0,
+                        "active_count": 0,
+                        "tracked_alert_count": 0,
+                        "resolved_alert_count": 0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                        "win_rate_pct": None,
+                        "clv_tracked_count": 0,
+                        "clv_ready_count": 0,
+                        "clv_positive_count": 0,
+                        "positive_snapshot_clv_rate": None,
+                        "avg_snapshot_clv_cents": None,
+                        "transition_count": 0,
+                        "avg_transition_minutes": None,
+                    },
+                    "transitioned": {
+                        "row_count": 0,
+                        "active_count": 0,
+                        "tracked_alert_count": 0,
+                        "resolved_alert_count": 0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                        "win_rate_pct": None,
+                        "clv_tracked_count": 0,
+                        "clv_ready_count": 0,
+                        "clv_positive_count": 0,
+                        "positive_snapshot_clv_rate": None,
+                        "avg_snapshot_clv_cents": None,
+                        "transition_count": 0,
+                        "avg_transition_minutes": None,
+                    },
+                    "confirmed_only": {
+                        "row_count": 0,
+                        "active_count": 0,
+                        "tracked_alert_count": 0,
+                        "resolved_alert_count": 0,
+                        "win_count": 0,
+                        "loss_count": 0,
+                        "win_rate_pct": None,
+                        "clv_tracked_count": 0,
+                        "clv_ready_count": 0,
+                        "clv_positive_count": 0,
+                        "positive_snapshot_clv_rate": None,
+                        "avg_snapshot_clv_cents": None,
+                        "transition_count": 0,
+                        "avg_transition_minutes": None,
+                    },
+                    "total_rows": 0,
+                }
+                save_alerted_bets(alerted_bets)
+                save_tracked_bets(tracked_bets)
 
             print("-" * 80)
             print("MARKET MODEL SUMMARY")
@@ -7485,100 +7591,101 @@ if __name__ == "__main__":
                     print(f"Avg instant CLV at alert: {row['avg_instant_clv_cents_at_alert']}")
                 print("-" * 80)
 
-            print_consensus(result["consensus_list"])
-            print("-" * 80)
-            print("NEAR-CONSENSUS MISSES")
-
-            near_misses = [
-                c for c in result["consensus_list"]
-                if c.get("consensus_type") == "near"
-            ]
-
-            if not near_misses:
-                print("No near-consensus situations.")
-            else:
-                for c in near_misses[:10]:
-                    print("-" * 80)
-                    print(f"Market:                {c['market']}")
-                    print(f"Outcome:               {c['outcome']}")
-                    print(f"Wallet count (all):    {c['wallet_count_all']}")
-                    print(f"Wallet count (scored): {c['wallet_count_scored']}")
-                    print(f"Weighted all:          {c.get('weighted_wallet_score_all', 'N/A')}")
-                    print(f"Weighted scored:       {c.get('weighted_wallet_score_scored', 'N/A')}")
-                    print(f"Total size (all):      {round(c['total_size_all'], 2)}")
-                    print(f"Consensus score:       {c['consensus_score']}")
-
-            print("-" * 80)
-            print("CONSENSUS DIAGNOSTICS")
-            print("=" * 80)
-
-            diagnostics = result.get("consensus_diagnostics", [])
-
-            if not diagnostics:
-                print("No multi-wallet markets to diagnose.")
-            else:
-                for d in diagnostics[:10]:
-                    print("-" * 80)
-                    print(f"Market:              {d['market']}")
-                    print(f"Outcome:             {d['outcome']}")
-                    print(f"Wallet count:        {d['wallet_count']}")
-
-                    for row in d["rows"]:
-                        print("  " + "-" * 72)
-                        print(f"  Wallet:            {row['wallet']}")
-                        print(f"  Buy count:         {row.get('buy_count', 'N/A')}")
-                        print(f"  Total size:        {row.get('total_size', 'N/A')}")
-                        print(f"  Avg trade price:   {row.get('avg_trade_price', 'N/A')}")
-                        print(f"  Sequence role:     {row.get('sequence_role', 'N/A')}")
-                        print(f"  Label:             {row.get('label', 'N/A')}")
-                        print(f"  Reason:            {row.get('reason', 'N/A')}")
-                        print(f"  Market Movement:   {row.get('market_movement_cents', 'N/A')}")
-                        print(f"  Since last buy(s): {row.get('seconds_since_last_buy', 'N/A')}")
-                        size_ratio_display = row.get("size_ratio")
-                        if size_ratio_display is None:
-                            size_ratio_display = "N/A"
-                        print(f"  Size ratio:        {size_ratio_display}")
-
-            if rejected_candidates:
+            if run_deep_debug:
+                print_consensus(result["consensus_list"])
                 print("-" * 80)
-                print("TOP REJECTED CANDIDATES")
-                for g in rejected_candidates[:10]:
+                print("NEAR-CONSENSUS MISSES")
+
+                near_misses = [
+                    c for c in result["consensus_list"]
+                    if c.get("consensus_type") == "near"
+                ]
+
+                if not near_misses:
+                    print("No near-consensus situations.")
+                else:
+                    for c in near_misses[:10]:
+                        print("-" * 80)
+                        print(f"Market:                {c['market']}")
+                        print(f"Outcome:               {c['outcome']}")
+                        print(f"Wallet count (all):    {c['wallet_count_all']}")
+                        print(f"Wallet count (scored): {c['wallet_count_scored']}")
+                        print(f"Weighted all:          {c.get('weighted_wallet_score_all', 'N/A')}")
+                        print(f"Weighted scored:       {c.get('weighted_wallet_score_scored', 'N/A')}")
+                        print(f"Total size (all):      {round(c['total_size_all'], 2)}")
+                        print(f"Consensus score:       {c['consensus_score']}")
+
+                print("-" * 80)
+                print("CONSENSUS DIAGNOSTICS")
+                print("=" * 80)
+
+                diagnostics = result.get("consensus_diagnostics", [])
+
+                if not diagnostics:
+                    print("No multi-wallet markets to diagnose.")
+                else:
+                    for d in diagnostics[:5]:
+                        print("-" * 80)
+                        print(f"Market:              {d['market']}")
+                        print(f"Outcome:             {d['outcome']}")
+                        print(f"Wallet count:        {d['wallet_count']}")
+
+                        for row in d["rows"]:
+                            print("  " + "-" * 72)
+                            print(f"  Wallet:            {row['wallet']}")
+                            print(f"  Buy count:         {row.get('buy_count', 'N/A')}")
+                            print(f"  Total size:        {row.get('total_size', 'N/A')}")
+                            print(f"  Avg trade price:   {row.get('avg_trade_price', 'N/A')}")
+                            print(f"  Sequence role:     {row.get('sequence_role', 'N/A')}")
+                            print(f"  Label:             {row.get('label', 'N/A')}")
+                            print(f"  Reason:            {row.get('reason', 'N/A')}")
+                            print(f"  Market Movement:   {row.get('market_movement_cents', 'N/A')}")
+                            print(f"  Since last buy(s): {row.get('seconds_since_last_buy', 'N/A')}")
+                            size_ratio_display = row.get("size_ratio")
+                            if size_ratio_display is None:
+                                size_ratio_display = "N/A"
+                            print(f"  Size ratio:        {size_ratio_display}")
+
+                if rejected_candidates:
                     print("-" * 80)
-                    print(f"Market:              {g['title']}")
-                    print(f"Outcome:             {g['outcome']}")
-                    print(f"Label:               {g['label']}")
-                    print(f"Reason: {g['reason']}")
-                    clv_key = make_clv_key(g.get("slug", ""), g.get("outcome", ""), g.get("wallet", ""))
-                    clv_row = clv_tracker.get(clv_key, {}) if isinstance(clv_tracker, dict) else {}
-                    snapshot_clv = clv_row.get("snapshot_clv")
-                    snapshot_clv_ready = clv_row.get("snapshot_clv_ready", False)
-                    latest_price = clv_row.get("latest_price")
-                    clv_status = "Not tracked yet"
-                    if clv_row:
-                        if snapshot_clv_ready and snapshot_clv is not None:
-                            try:
-                                snapshot_clv_cents = round(float(snapshot_clv) * 100, 2)
-                                clv_status = f"{snapshot_clv_cents:+.2f} cents"
-                            except Exception:
-                                clv_status = "Ready but unreadable"
-                        else:
-                            entry_price_for_clv = clv_row.get("entry_price")
-                            try:
-                                if entry_price_for_clv is not None and latest_price is not None:
-                                    live_clv_cents = round((float(latest_price) - float(entry_price_for_clv)) * 100, 2)
-                                    clv_status = f"Pending ({live_clv_cents:+.2f} cents so far)"
-                                else:
+                    print("TOP REJECTED CANDIDATES")
+                    for g in rejected_candidates[:5]:
+                        print("-" * 80)
+                        print(f"Market:              {g['title']}")
+                        print(f"Outcome:             {g['outcome']}")
+                        print(f"Label:               {g['label']}")
+                        print(f"Reason: {g['reason']}")
+                        clv_key = make_clv_key(g.get("slug", ""), g.get("outcome", ""), g.get("wallet", ""))
+                        clv_row = clv_tracker.get(clv_key, {}) if isinstance(clv_tracker, dict) else {}
+                        snapshot_clv = clv_row.get("snapshot_clv")
+                        snapshot_clv_ready = clv_row.get("snapshot_clv_ready", False)
+                        latest_price = clv_row.get("latest_price")
+                        clv_status = "Not tracked yet"
+                        if clv_row:
+                            if snapshot_clv_ready and snapshot_clv is not None:
+                                try:
+                                    snapshot_clv_cents = round(float(snapshot_clv) * 100, 2)
+                                    clv_status = f"{snapshot_clv_cents:+.2f} cents"
+                                except Exception:
+                                    clv_status = "Ready but unreadable"
+                            else:
+                                entry_price_for_clv = clv_row.get("entry_price")
+                                try:
+                                    if entry_price_for_clv is not None and latest_price is not None:
+                                        live_clv_cents = round((float(latest_price) - float(entry_price_for_clv)) * 100, 2)
+                                        clv_status = f"Pending ({live_clv_cents:+.2f} cents so far)"
+                                    else:
+                                        clv_status = "Pending"
+                                except Exception:
                                     clv_status = "Pending"
-                            except Exception:
-                                clv_status = "Pending"
-                    print(f"Snapshot CLV: {clv_status}")
-                    market_text = g.get("market")
-                    if not market_text:
-                        market_text = g.get("question")
-                    if not market_text:
-                        market_text = g.get("title")
-                    if not market_text:
-                        market_text = g.get("slug")
+                        print(f"Snapshot CLV: {clv_status}")
+                        market_text = g.get("market")
+                        if not market_text:
+                            market_text = g.get("question")
+                        if not market_text:
+                            market_text = g.get("title")
+                        if not market_text:
+                            market_text = g.get("slug")
 
         except Exception as e:
             import traceback
