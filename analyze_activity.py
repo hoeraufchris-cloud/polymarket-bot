@@ -234,6 +234,30 @@ BET_ALERT_HARD_PRE_EVENISH_MIN_SIZE_RATIO = 5.0
 BET_ALERT_PRE_EARLY_SCORE_BONUS = 5
 BET_ALERT_PRE_LEADER_SCORE_PENALTY = 5
 
+ALERT_QUALITY_BLOCKED_WALLETS = {
+    "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
+    "0xc8075693f48668a264b9fa313b47f52712fcc12b",
+    "0x5db55991a1b7a921c39aa5d823bfd15397b81a50",
+    "0x6ade597c0e2b43c0bf3542cada8a5e330d73f5b0",
+    "0x9d94f602535e518ee1cb6aade0ca9569f1b1017d",
+    "0x13414a77a4be48988851c73dfd824d0168e70853",
+}
+
+ALERT_QUALITY_BLOCKED_SPORT_PHASES = {
+    ("NBA", "Live"),
+    ("MLB", "Pre-Game"),
+    ("NHL", "Pre-Game"),
+    ("Other", "Pre-Game"),
+    ("Esports", "Live"),
+    ("Esports", "Pre-Game"),
+}
+
+ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK = 7
+ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK = 35.0
+ALERT_QUALITY_PREGAME_EVENISH_MIN_SCORE = 85
+ALERT_QUALITY_PREGAME_EVENISH_MIN_CONSENSUS = 70
+ALERT_QUALITY_PREGAME_EVENISH_MIN_SIZE_RATIO = 3.0
+
 def get_structural_hard_fail_reason(g):
     if not isinstance(g, dict):
         return None
@@ -4904,7 +4928,7 @@ def annotate_opposite_side_conflict(g, alerted_bets):
     annotated["possible_flip"] = annotated["possible_flip_reason"] is not None
     return annotated
 
-def should_send_bet_alert(g, alerted_bets, now_ts):
+def should_send_bet_alert(g, alerted_bets, now_ts, wallet_profiles):
     if not isinstance(g, dict):
         return False
 
@@ -4912,6 +4936,11 @@ def should_send_bet_alert(g, alerted_bets, now_ts):
         return False
 
     g["duplicate_reason"] = None
+
+    quality_block_reason = get_alert_quality_block_reason(g, wallet_profiles)
+    if quality_block_reason:
+        g["quality_filter_reason"] = quality_block_reason
+        return False
 
     if g.get("opposite_conflict") and not g.get("possible_flip"):
         return False
@@ -5598,12 +5627,16 @@ def dedupe_bet_candidates_for_cycle(bet_candidates):
     deduped.sort(key=cycle_bet_rank, reverse=True)
     return deduped
 
-def classify_bet_alert_decision(g, alerted_bets, now_ts):
+def classify_bet_alert_decision(g, alerted_bets, now_ts, wallet_profiles):
     if not isinstance(g, dict):
         return "skip_not_dict"
 
     if str(g.get("label", "") or "").upper() != "BET":
         return "skip_not_bet"
+
+    quality_block_reason = get_alert_quality_block_reason(g, wallet_profiles)
+    if quality_block_reason:
+        return "skip_quality_filter"
 
     if g.get("opposite_conflict") and not g.get("possible_flip"):
         return "skip_opposite_conflict"
@@ -6326,6 +6359,161 @@ def price_to_american_odds(price):
         return int(round(odds))
     except Exception:
         return None
+
+
+def get_signal_sport_bucket(g):
+    if not isinstance(g, dict):
+        return "Other"
+
+    market_text = str(g.get("market", "") or "").strip().lower()
+    title_text = str(g.get("title", "") or "").strip().lower()
+    slug_text = str(g.get("slug", "") or "").strip().lower()
+
+    combined = f"{market_text} | {title_text} | {slug_text}"
+
+    if "wnba" in combined:
+        return "WNBA"
+    if "nba" in combined or "basketball" in combined:
+        return "NBA"
+    if "mlb" in combined or "baseball" in combined:
+        return "MLB"
+    if "nhl" in combined or "hockey" in combined:
+        return "NHL"
+    if (
+        "soccer" in combined
+        or "epl" in combined
+        or "mls" in combined
+        or "uefa" in combined
+        or "bundesliga" in combined
+        or "serie a" in combined
+        or "la liga" in combined
+        or "champions league" in combined
+    ):
+        return "Soccer"
+    if (
+        "tennis" in combined
+        or "atp" in combined
+        or "wta" in combined
+        or "challenger" in combined
+    ):
+        return "Tennis"
+    if (
+        "esports" in combined
+        or "valorant" in combined
+        or "counter-strike" in combined
+        or "cs2" in combined
+        or "dota" in combined
+        or "league of legends" in combined
+    ):
+        return "Esports"
+
+    return "Other"
+
+
+def get_signal_odds_bucket(g):
+    if not isinstance(g, dict):
+        return "Unknown"
+
+    price = g.get("current_price")
+    if price in (None, "", 0):
+        price = g.get("wallet_entry_price")
+    if price in (None, "", 0):
+        price = g.get("avg_trade_price")
+
+    american_odds = price_to_american_odds(price)
+    if american_odds is None:
+        return "Unknown"
+
+    if american_odds <= -150:
+        return "-150+ favorite"
+    if american_odds <= -110:
+        return "-110 to -150"
+    if american_odds < 110:
+        return "Even-ish"
+    if american_odds <= 150:
+        return "+110 to +150"
+    return "+150+"
+
+
+def get_alert_quality_block_reason(g, wallet_profiles):
+    if not isinstance(g, dict):
+        return "invalid_candidate"
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    if wallet in ALERT_QUALITY_BLOCKED_WALLETS:
+        return "blocked_wallet"
+
+    wallet_profile = {}
+    if isinstance(wallet_profiles, dict):
+        wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
+    try:
+        resolved_bets = int(wallet_profile.get("resolved_bets", 0) or 0)
+    except Exception:
+        resolved_bets = 0
+
+    resolved_win_rate = wallet_profile.get("resolved_win_rate")
+    try:
+        resolved_win_rate = (
+            float(resolved_win_rate) if resolved_win_rate is not None else None
+        )
+    except Exception:
+        resolved_win_rate = None
+
+    if (
+        resolved_bets >= ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK
+        and resolved_win_rate is not None
+        and resolved_win_rate <= ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK
+    ):
+        return (
+            f"poor_tracked_results_{resolved_bets}_bets_"
+            f"{round(resolved_win_rate, 1)}pct"
+        )
+
+    sport_bucket = get_signal_sport_bucket(g)
+    market_phase = str(g.get("market_phase", "") or "").strip()
+
+    if (sport_bucket, market_phase) in ALERT_QUALITY_BLOCKED_SPORT_PHASES:
+        return f"blocked_sport_phase_{sport_bucket}_{market_phase}"
+
+    odds_bucket = get_signal_odds_bucket(g)
+
+    try:
+        score = int(g.get("score", 0) or 0)
+    except Exception:
+        score = 0
+
+    try:
+        consensus_score = int(g.get("consensus_score", 0) or 0)
+    except Exception:
+        consensus_score = 0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    try:
+        followers = int(get_follower_count(g) or 0)
+    except Exception:
+        followers = 0
+
+    if market_phase == "Pre-Game" and odds_bucket == "Even-ish":
+        evenish_override = (
+            score >= ALERT_QUALITY_PREGAME_EVENISH_MIN_SCORE
+            or consensus_score >= ALERT_QUALITY_PREGAME_EVENISH_MIN_CONSENSUS
+            or size_ratio >= ALERT_QUALITY_PREGAME_EVENISH_MIN_SIZE_RATIO
+            or followers >= 1
+        )
+
+        if not evenish_override:
+            return (
+                "blocked_pregame_evenish_"
+                f"score_{score}_consensus_{consensus_score}_"
+                f"ratio_{round(size_ratio, 2)}_followers_{followers}"
+            )
+
+    return None
 
 def format_event_start(event_start):
     if not event_start:
@@ -7118,10 +7306,11 @@ if __name__ == "__main__":
                     alert_g,
                     alerted_bets,
                     result["now_ts"],
+                    wallet_profiles,
                 )
                 alert_decision_counts[decision] += 1
 
-                if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"]):
+                if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"], wallet_profiles):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
 
@@ -7225,6 +7414,7 @@ if __name__ == "__main__":
                 print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
                 print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
                 print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
+                print(f"Skipped quality filter: {alert_decision_counts['skip_quality_filter']}")
                 print(f"Skipped new bets - weak: {alert_decision_counts['skip_new_bet_weak']}")
                 print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
                 print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
@@ -7282,16 +7472,34 @@ if __name__ == "__main__":
                     print(f"{k}: {v}")
 
             if not RUNTIME_SUMMARY_ONLY:
+                recent_model_signal_metrics_safe = locals().get("recent_model_signal_metrics", [])
+                market_model_recommendations_safe = locals().get("market_model_recommendations", [])
+                tracked_model_recommendation_count_safe = locals().get("tracked_model_recommendation_count", 0)
+
+                if not isinstance(recent_model_signal_metrics_safe, list):
+                    recent_model_signal_metrics_safe = []
+
+                if not isinstance(market_model_recommendations_safe, list):
+                    market_model_recommendations_safe = []
+
                 print("-" * 80)
                 print("MARKET MODEL SUMMARY")
                 print("=" * 80)
                 print(f"Model history lookback hours: {MODEL_HISTORY_LOOKBACK_HOURS}")
-                print(f"Recent model signal rows: {len(recent_model_signal_metrics)}")
-                print(f"Saved market model recommendations: {len(market_model_recommendations)}")
-                print(f"New model recommendations tracked this cycle: {tracked_model_recommendation_count}")
+                print(f"Recent model signal rows: {len(recent_model_signal_metrics_safe)}")
+                print(f"Saved market model recommendations: {len(market_model_recommendations_safe)}")
+                print(f"New model recommendations tracked this cycle: {tracked_model_recommendation_count_safe}")
 
                 tracked_model_bets_summary = load_tracked_model_bets()
                 tracked_model_total = len(tracked_model_bets_summary)
+                tracked_model_bet_total = sum(
+                    1 for row in tracked_model_bets_summary.values()
+                    if isinstance(row, dict) and str(row.get("recommendation", "") or "").upper() == "BET"
+                )
+                tracked_model_lean_total = sum(
+                    1 for row in tracked_model_bets_summary.values()
+                    if isinstance(row, dict) and str(row.get("recommendation", "") or "").upper() == "LEAN"
+                )
                 tracked_model_resolved = sum(
                     1 for row in tracked_model_bets_summary.values()
                     if isinstance(row, dict) and row.get("resolved")
@@ -7306,25 +7514,32 @@ if __name__ == "__main__":
                 )
 
                 print(f"Tracked model recommendations all-time: {tracked_model_total}")
+                print(f"Tracked model BETs: {tracked_model_bet_total}")
+                print(f"Tracked model LEANs: {tracked_model_lean_total}")
                 print(f"Resolved model recommendations: {tracked_model_resolved}")
                 print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
+                market_model_debug_counts_safe = locals().get("market_model_debug_counts", {})
+
+                if not isinstance(market_model_debug_counts_safe, dict):
+                    market_model_debug_counts_safe = {}
+
                 print("-" * 80)
                 print("MARKET MODEL BUILD DEBUG")
                 print("=" * 80)
-                print(f"Grouped markets: {market_model_debug_counts.get('grouped_markets', 0)}")
-                print(f"Snapshots built: {market_model_debug_counts.get('snapshot_built', 0)}")
-                print(f"Skipped - no snapshot: {market_model_debug_counts.get('skipped_no_snapshot', 0)}")
-                print(f"Skipped - bad minutes: {market_model_debug_counts.get('skipped_bad_minutes', 0)}")
-                print(f"Skipped - below window: {market_model_debug_counts.get('skipped_below_window', 0)}")
-                print(f"Skipped - above window: {market_model_debug_counts.get('skipped_above_window', 0)}")
-                print(f"Skipped - no model output: {market_model_debug_counts.get('skipped_no_model_output', 0)}")
-                print(f"Classified early_watch: {market_model_debug_counts.get('classified_early_watch', 0)}")
-                print(f"Classified early_watch_shadow: {market_model_debug_counts.get('classified_early_watch_shadow', 0)}")
-                print(f"Classified early_watch_shadow_size_ratio: {market_model_debug_counts.get('classified_early_watch_shadow_size_ratio', 0)}")
-                print(f"Classified confirmed: {market_model_debug_counts.get('classified_confirmed', 0)}")
-                print(f"Classified discard: {market_model_debug_counts.get('classified_discard', 0)}")
+                print(f"Grouped markets: {market_model_debug_counts_safe.get('grouped_markets', 0)}")
+                print(f"Snapshots built: {market_model_debug_counts_safe.get('snapshot_built', 0)}")
+                print(f"Skipped - no snapshot: {market_model_debug_counts_safe.get('skipped_no_snapshot', 0)}")
+                print(f"Skipped - bad minutes: {market_model_debug_counts_safe.get('skipped_bad_minutes', 0)}")
+                print(f"Skipped - below window: {market_model_debug_counts_safe.get('skipped_below_window', 0)}")
+                print(f"Skipped - above window: {market_model_debug_counts_safe.get('skipped_above_window', 0)}")
+                print(f"Skipped - no model output: {market_model_debug_counts_safe.get('skipped_no_model_output', 0)}")
+                print(f"Classified early_watch: {market_model_debug_counts_safe.get('classified_early_watch', 0)}")
+                print(f"Classified early_watch_shadow: {market_model_debug_counts_safe.get('classified_early_watch_shadow', 0)}")
+                print(f"Classified early_watch_shadow_size_ratio: {market_model_debug_counts_safe.get('classified_early_watch_shadow_size_ratio', 0)}")
+                print(f"Classified confirmed: {market_model_debug_counts_safe.get('classified_confirmed', 0)}")
+                print(f"Classified discard: {market_model_debug_counts_safe.get('classified_discard', 0)}")
 
-                discard_reason_counts = market_model_debug_counts.get("discard_reason_counts", {})
+                discard_reason_counts = market_model_debug_counts_safe.get('discard_reason_counts', {})
                 if discard_reason_counts:
                     print("Discard reasons:")
                     for reason, count in sorted(discard_reason_counts.items(), key=lambda x: (-x[1], x[0])):
@@ -7383,8 +7598,10 @@ if __name__ == "__main__":
             print(f"Signal stage tracker rows: {signal_stage_tracker_summary['tracker_rows']}")
             print(f"New early_watch rows this cycle: {signal_stage_tracker_summary['newly_seen_early_watch']}")
             print(f"New confirmed rows this cycle: {signal_stage_tracker_summary['newly_seen_confirmed']}")
-            print(f"New early_watch -> confirmed transitions this cycle: {signal_stage_tracker_summary['newly_transitioned']}")
-            print(f"Total transitioned rows tracked: {signal_stage_tracker_summary['transitioned_total']}")
+            print(f"New early_watch -> confirmed transitions this cycle: {signal_stage_tracker_summary.get('newly_transitioned', 0)}")
+            print(f"Total transitioned rows tracked: {signal_stage_tracker_summary.get('transitioned_total', 0)}")
+
+            signal_stage_performance_summary = signal_stage_tracker_summary
 
             print("-" * 80)
             print("SIGNAL STAGE PERFORMANCE SUMMARY - ALL TIME")
@@ -7395,33 +7612,38 @@ if __name__ == "__main__":
                 ("transitioned", "Early-watch -> confirmed"),
                 ("confirmed_only", "Confirmed only"),
             ]:
-                bucket = signal_stage_performance_summary[bucket_name]
+                bucket = signal_stage_performance_summary.get(bucket_name, {})
+
                 print("-" * 80)
                 print(f"{bucket_label}:")
-                print(f"Rows: {bucket['row_count']}")
-                print(f"Currently active: {bucket['active_count']}")
-                print(f"Tracked alerts: {bucket['tracked_alert_count']}")
-                print(f"Resolved alerts: {bucket['resolved_alert_count']}")
-                print(f"Wins: {bucket['win_count']}")
-                print(f"Losses: {bucket['loss_count']}")
-                print(f"Win rate: {bucket['win_rate_pct']}")
-                print(f"CLV tracked: {bucket['clv_tracked_count']}")
-                print(f"CLV ready: {bucket['clv_ready_count']}")
-                print(f"CLV positive: {bucket['clv_positive_count']}")
-                print(f"Positive snapshot CLV rate: {bucket['positive_snapshot_clv_rate']}")
-                print(f"Avg snapshot CLV cents: {bucket['avg_snapshot_clv_cents']}")
-                print(f"Transition count: {bucket['transition_count']}")
-                print(f"Avg transition minutes: {bucket['avg_transition_minutes']}")
-                print_stage_edge_analysis(signal_stage_tracker)
+                print(f"Rows: {bucket.get('rows', 0)}")
+                print(f"Currently active: {bucket.get('currently_active', 0)}")
+                print(f"Tracked alerts: {bucket.get('tracked_alerts', 0)}")
+                print(f"Resolved alerts: {bucket.get('resolved_alerts', 0)}")
+                print(f"Wins: {bucket.get('wins', 0)}")
+                print(f"Losses: {bucket.get('losses', 0)}")
+                print(f"Win rate: {bucket.get('win_rate')}")
+                print(f"CLV tracked: {bucket.get('clv_tracked', 0)}")
+                print(f"CLV ready: {bucket.get('clv_ready', 0)}")
+                print(f"CLV positive: {bucket.get('clv_positive', 0)}")
+                print(f"Positive snapshot CLV rate: {bucket.get('positive_snapshot_clv_rate')}")
+                print(f"Avg snapshot CLV cents: {bucket.get('avg_snapshot_clv_cents')}")
+                print(f"Transition count: {bucket.get('transition_count', 0)}")
+                print(f"Avg transition minutes: {bucket.get('avg_transition_minutes')}")
+
+            market_model_recommendations_safe = locals().get("market_model_recommendations", [])
+
+            if not isinstance(market_model_recommendations_safe, list):
+                market_model_recommendations_safe = []
 
             top_model_bets = [
-                row for row in market_model_recommendations
-                if str(row.get("recommendation", "") or "").upper() == "BET"
+                row for row in market_model_recommendations_safe
+                if isinstance(row, dict) and str(row.get("recommendation", "") or "").upper() == "BET"
             ]
 
             top_model_leans = [
-                row for row in market_model_recommendations
-                if str(row.get("recommendation", "") or "").upper() == "LEAN"
+                row for row in market_model_recommendations_safe
+                if isinstance(row, dict) and str(row.get("recommendation", "") or "").upper() == "LEAN"
             ]
 
             print(f"Model BET count: {len(top_model_bets)}")
@@ -7446,32 +7668,43 @@ if __name__ == "__main__":
             else:
                 print("Top model signal: None")
 
+            clv_summary_safe = locals().get("clv_summary", {})
+
+            if not isinstance(clv_summary_safe, dict):
+                clv_summary_safe = {}
+
             print("-" * 80)
             print("SNAPSHOT CLV SUMMARY")
             print("=" * 80)
-            print(f"Tracked BET alerts: {clv_summary['tracked']}")
-            print(f"CLV-ready alerts: {clv_summary['ready']}")
-            print(f"Positive CLV count: {clv_summary['positive']}")
-            if clv_summary["ready"] > 0:
+            print(f"Tracked BET alerts: {clv_summary_safe.get('tracked', 0)}")
+            print(f"CLV-ready alerts: {clv_summary_safe.get('ready', 0)}")
+            print(f"Positive CLV count: {clv_summary_safe.get('positive', 0)}")
+            if clv_summary_safe.get("ready", 0) > 0:
                 positive_rate = round(
-                    (clv_summary["positive"] / max(clv_summary["ready"], 1)) * 100,
+                    (clv_summary_safe.get("positive", 0) / max(clv_summary_safe.get("ready", 0), 1)) * 100,
                     1,
                 )
                 print(f"Positive CLV rate: {positive_rate}%")
             else:
                 print("Positive CLV rate: N/A")
-            print(f"Avg snapshot CLV: {clv_summary['avg_snapshot_clv_cents']} cents")
+
+            print(f"Avg snapshot CLV: {clv_summary_safe.get('avg_snapshot_clv_cents', 0.0)} cents")
+            tracked_bet_summary_safe = locals().get("tracked_bet_summary", {})
+
+            if not isinstance(tracked_bet_summary_safe, dict):
+                tracked_bet_summary_safe = {}
+
             print("-" * 80)
             print("TRACKED BET RESULTS SUMMARY")
             print("=" * 80)
-            print(f"Tracked bets: {tracked_bet_summary['tracked']}")
-            print(f"Resolved bets: {tracked_bet_summary['resolved']}")
-            print(f"Wins: {tracked_bet_summary['wins']}")
-            print(f"Losses: {tracked_bet_summary['losses']}")
-            print(f"Newly resolved this cycle: {tracked_bet_summary['newly_resolved']}")
-            if tracked_bet_summary["resolved"] > 0:
+            print(f"Tracked bets: {tracked_bet_summary_safe.get('tracked', 0)}")
+            print(f"Resolved bets: {tracked_bet_summary_safe.get('resolved', 0)}")
+            print(f"Wins: {tracked_bet_summary_safe.get('wins', 0)}")
+            print(f"Losses: {tracked_bet_summary_safe.get('losses', 0)}")
+            print(f"Newly resolved this cycle: {tracked_bet_summary_safe.get('newly_resolved', 0)}")
+            if tracked_bet_summary_safe.get("resolved", 0) > 0:
                 tracked_win_rate = round(
-                    (tracked_bet_summary["wins"] / max(tracked_bet_summary["resolved"], 1)) * 100,
+                    (tracked_bet_summary_safe.get("wins", 0) / max(tracked_bet_summary_safe.get("resolved", 0), 1)) * 100,
                     1,
                 )
                 print(f"Resolved win rate: {tracked_win_rate}%")
