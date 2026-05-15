@@ -1,3 +1,10 @@
+try:
+    import truststore
+    truststore.inject_into_ssl()
+    print("[SSL] Using system trust store via truststore")
+except Exception as e:
+    print(f"[SSL] truststore not active: {e}")
+
 import json
 def log_alert(bet):
     try:
@@ -7327,6 +7334,62 @@ if __name__ == "__main__":
                         f"stake={alert_g.get('stake_pct')} "
                         f"tracked_bets_count={len(tracked_bets)}"
                     )
+
+                    execution_outcome = str(alert_g.get("outcome") or "").strip().lower()
+                    execution_slug = alert_g.get("slug")
+                    execution_price = alert_g.get("current_price")
+
+                    if execution_slug and execution_price and execution_outcome:
+                        try:
+                            from execution import preview_order
+
+                            execution_preview = preview_order(
+                                market_slug=execution_slug,
+                                outcome=execution_outcome,
+                                price=execution_price,
+                                max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
+                            )
+
+                            alert_g["execution_preview_status"] = "PREVIEW_OK"
+                            alert_g["execution_preview_mode"] = execution_preview.get("mode")
+                            alert_g["execution_preview_payload"] = execution_preview.get("payload")
+
+                            preview_order_data = execution_preview.get("preview", {}).get("order", {})
+                            alert_g["execution_preview_action"] = preview_order_data.get("action")
+                            alert_g["execution_preview_outcome_side"] = preview_order_data.get("outcomeSide")
+                            alert_g["execution_preview_quantity"] = preview_order_data.get("quantity")
+
+                            print(
+                                "[ORDER PREVIEW OK] "
+                                f"market={execution_slug} "
+                                f"outcome={execution_outcome} "
+                                f"price={execution_price} "
+                                f"quantity={alert_g.get('execution_preview_quantity')} "
+                                f"mode={alert_g.get('execution_preview_mode')}"
+                            )
+
+                        except Exception as e:
+                            alert_g["execution_preview_status"] = "PREVIEW_FAILED"
+                            alert_g["execution_preview_error"] = str(e)
+
+                            print(
+                                "[ORDER PREVIEW FAILED] "
+                                f"market={execution_slug} "
+                                f"outcome={execution_outcome} "
+                                f"price={execution_price} "
+                                f"error={e}"
+                            )
+
+                    else:
+                        alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
+
+                        print(
+                            "[ORDER PREVIEW SKIPPED] "
+                            f"market={execution_slug} "
+                            f"outcome={alert_g.get('outcome')} "
+                            f"price={execution_price} "
+                            "reason=unsupported_or_missing_order_mapping"
+                        )
 
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
