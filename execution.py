@@ -98,18 +98,51 @@ def convert_feed_slug_to_us_slug(market_slug):
 
     converted = slug.replace("nba-sas-", "nba-sa-")
 
-    if "-total-" in converted:
+    supported_league_prefixes = ("nba-", "mlb-", "wnba-")
+
+    if "-total-" in converted and converted.startswith(supported_league_prefixes):
         converted = converted.replace("-total-", "-")
+        return "tsc-" + converted
 
-        if converted.startswith("nba-"):
-            converted = "tsc-" + converted
-
-        return converted
-
-    if converted.startswith("nba-"):
+    if converted.startswith(supported_league_prefixes):
         return "aec-" + converted
 
     return converted
+
+def is_supported_execution_market(market_slug):
+    slug = str(market_slug or "").strip().lower()
+
+    if not slug:
+        return False, "missing_slug"
+
+    supported_league_prefixes = ("nba-", "mlb-", "wnba-")
+
+    if not slug.startswith(supported_league_prefixes):
+        return False, "unsupported_league_or_prefix"
+
+    unsupported_markers = [
+        "-spread-",
+        "-btbs",
+        "-btts",
+        "-draw",
+        "-f5-",
+        "-1h-",
+        "-1q-",
+        "-2q-",
+        "-3q-",
+        "-4q-",
+        "-player-",
+        "-props-",
+    ]
+
+    for marker in unsupported_markers:
+        if marker in slug:
+            return False, f"unsupported_market_type:{marker}"
+
+    if "-total-" in slug:
+        return True, "supported_total"
+
+    return True, "supported_moneyline"
 
 def build_order_payload(
     market_slug,

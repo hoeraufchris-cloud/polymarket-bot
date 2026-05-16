@@ -7339,7 +7339,14 @@ if __name__ == "__main__":
                     execution_slug = alert_g.get("slug")
                     execution_price = alert_g.get("current_price")
 
-                    if execution_slug and execution_price and execution_outcome:
+                    try:
+                        from execution import is_supported_execution_market
+                        execution_supported, execution_skip_reason = is_supported_execution_market(execution_slug)
+                    except Exception as e:
+                        execution_supported = False
+                        execution_skip_reason = f"execution_support_check_failed:{e}"
+
+                    if execution_slug and execution_price and execution_outcome and execution_supported:
                         try:
                             from execution import preview_order
 
@@ -7382,13 +7389,14 @@ if __name__ == "__main__":
 
                     else:
                         alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
+                        alert_g["execution_preview_skip_reason"] = execution_skip_reason
 
                         print(
                             "[ORDER PREVIEW SKIPPED] "
                             f"market={execution_slug} "
                             f"outcome={alert_g.get('outcome')} "
                             f"price={execution_price} "
-                            "reason=unsupported_or_missing_order_mapping"
+                            f"reason={execution_skip_reason}"
                         )
 
                     send_pushover_bet_alert(alert_g)
