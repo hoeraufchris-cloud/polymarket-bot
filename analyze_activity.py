@@ -107,6 +107,7 @@ import math
 import ssl
 import certifi
 
+
 try:
     import truststore
 except Exception:
@@ -154,6 +155,8 @@ from market_model import (
     filter_recent_signal_metrics_rows,
     MODEL_HISTORY_LOOKBACK_HOURS,
 )
+
+UNAVAILABLE_EXECUTION_MARKETS = set()
 
 PUSHOVER_ENABLED = True
 PUSHOVER_USER_KEYS = [
@@ -7346,7 +7349,19 @@ if __name__ == "__main__":
                         execution_supported = False
                         execution_skip_reason = f"execution_support_check_failed:{e}"
 
-                    if execution_slug and execution_price and execution_outcome and execution_supported:
+                    if str(execution_slug) in UNAVAILABLE_EXECUTION_MARKETS:
+                        alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
+                        alert_g["execution_preview_skip_reason"] = "cached_market_not_found"
+
+                        print(
+                            "[ORDER PREVIEW SKIPPED] "
+                            f"market={execution_slug} "
+                            f"outcome={alert_g.get('outcome')} "
+                            f"price={execution_price} "
+                            "reason=cached_market_not_found"
+                        )
+
+                    elif execution_slug and execution_price and execution_outcome and execution_supported:
                         try:
                             from execution import preview_order
 
@@ -7378,6 +7393,11 @@ if __name__ == "__main__":
                         except Exception as e:
                             alert_g["execution_preview_status"] = "PREVIEW_FAILED"
                             alert_g["execution_preview_error"] = str(e)
+
+                            error_text = str(e)
+
+                            if "market not found" in error_text.lower():
+                                UNAVAILABLE_EXECUTION_MARKETS.add(str(execution_slug))
 
                             print(
                                 "[ORDER PREVIEW FAILED] "
