@@ -1,4 +1,6 @@
+import json
 import os
+import time
 from decimal import Decimal, ROUND_DOWN
 
 from polymarket_us import PolymarketUS
@@ -17,6 +19,13 @@ LIVE_ORDER_MIN_EDGE_PERCENT = Decimal(os.getenv("LIVE_ORDER_MIN_EDGE_PERCENT", "
 LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS = int(os.getenv("LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS", "120"))
 LIVE_ORDER_MIN_PRICE = Decimal(os.getenv("LIVE_ORDER_MIN_PRICE", "0.05"))
 LIVE_ORDER_MAX_PRICE = Decimal(os.getenv("LIVE_ORDER_MAX_PRICE", "0.95"))
+
+EXECUTION_LEDGER_PATH = os.getenv(
+    "EXECUTION_LEDGER_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "execution_orders.json"),
+)
+EXECUTION_DEDUPE_TTL_SECONDS = int(os.getenv("EXECUTION_DEDUPE_TTL_SECONDS", "1800"))
+EXECUTION_LEDGER_MAX_ROWS = int(os.getenv("EXECUTION_LEDGER_MAX_ROWS", "5000"))
 
 
 
@@ -168,6 +177,7 @@ def convert_feed_slug_to_us_slug(market_slug):
 
     return converted
 
+
 def is_supported_execution_market(market_slug):
     slug = str(market_slug or "").strip().lower()
 
@@ -185,6 +195,107 @@ def is_supported_execution_market(market_slug):
             return False, f"unsupported_market_type:{marker}"
 
     return True, "attempt_once_preview_candidate"
+
+
+def make_execution_key(market_slug, outcome, price):
+    resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
+    normalized_price = normalize_price(price)
+    outcome_clean = str(outcome or "").strip().lower()
+
+    return f"{resolved_market_slug}||{outcome_clean}||{normalized_price}"
+
+
+def load_execution_ledger():
+    if not os.path.exists(EXECUTION_LEDGER_PATH):
+        return []
+
+    try:
+        with open(EXECUTION_LEDGER_PATH, "r") as f:
+            rows = json.load(f)
+
+        if isinstance(rows, list):
+            return rows
+
+        return []
+
+    except Exception:
+        return []
+
+
+def save_execution_ledger(rows):
+    os.makedirs(os.path.dirname(EXECUTION_LEDGER_PATH), exist_ok=True)
+
+    rows_to_save = rows[-EXECUTION_LEDGER_MAX_ROWS:]
+
+    with open(EXECUTION_LEDGER_PATH, "w") as f:
+        json.dump(rows_to_save, f, indent=2, default=str)
+
+
+def get_recent_execution_record(market_slug, outcome, price):
+    execution_key = make_execution_key(market_slug, outcome, price)
+    now_ts = time.time()
+
+    for row in reversed(load_execution_ledger()):
+        if row.get("execution_key") != execution_key:
+            continue
+
+        try:
+            row_ts = float(row.get("timestamp", 0))
+        except Exception:
+            row_ts = 0
+
+        if now_ts - row_ts <= EXECUTION_DEDUPE_TTL_SECONDS:
+            return row
+
+    return None
+
+
+def record_execution_attempt(
+    market_slug,
+    outcome,
+    price,
+    mode,
+    status,
+    live_safe=None,
+    live_safety_reason=None,
+    payload=None,
+    preview=None,
+    order=None,
+    error=None,
+):
+    resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
+    execution_key = make_execution_key(market_slug, outcome, price)
+
+    preview_order = {}
+
+    if isinstance(preview, dict):
+        preview_order = preview.get("order", {}) or {}
+
+    row = {
+        "timestamp": time.time(),
+        "execution_key": execution_key,
+        "feed_market_slug": market_slug,
+        "resolved_market_slug": resolved_market_slug,
+        "outcome": outcome,
+        "price": str(price),
+        "mode": mode,
+        "status": status,
+        "live_safe": live_safe,
+        "live_safety_reason": live_safety_reason,
+        "payload": payload,
+        "preview_order_id": preview_order.get("id"),
+        "preview_action": preview_order.get("action"),
+        "preview_outcome_side": preview_order.get("outcomeSide"),
+        "preview_quantity": preview_order.get("quantity"),
+        "order": order,
+        "error": str(error) if error else None,
+    }
+
+    rows = load_execution_ledger()
+    rows.append(row)
+    save_execution_ledger(rows)
+
+    return row
 
 def build_order_payload(
     market_slug,

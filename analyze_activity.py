@@ -7363,77 +7363,165 @@ if __name__ == "__main__":
 
                     elif execution_slug and execution_price and execution_outcome and execution_supported:
                         try:
-                            from execution import execute_order_safely
+                            from execution import get_recent_execution_record
 
-                            execution_preview = execute_order_safely(
+                            recent_execution_record = get_recent_execution_record(
                                 market_slug=execution_slug,
                                 outcome=execution_outcome,
                                 price=execution_price,
-                                max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
-                                signal_context={
-                                    "edge_percent": (
-                                        alert_g.get("edge_percent")
-                                        if alert_g.get("edge_percent") is not None
-                                        else alert_g.get("edge")
-                                        if alert_g.get("edge") is not None
-                                        else alert_g.get("edge_pct")
-                                        if alert_g.get("edge_pct") is not None
-                                        else alert_g.get("edge_percent_value")
-                                    ),
-                                    "since_last_buy_s": (
-                                        alert_g.get("since_last_buy_s")
-                                        if alert_g.get("since_last_buy_s") is not None
-                                        else alert_g.get("since_last_buy_seconds")
-                                        if alert_g.get("since_last_buy_seconds") is not None
-                                        else alert_g.get("seconds_since_last_buy")
-                                    ),
-                                    "market_phase": alert_g.get("market_phase"),
-                                    "stake_percent": (
-                                        alert_g.get("stake_percent")
-                                        if alert_g.get("stake_percent") is not None
-                                        else alert_g.get("stake_pct")
-                                    ),
-                                },
-                            )
-
-                            alert_g["execution_preview_status"] = "PREVIEW_OK"
-                            alert_g["execution_preview_mode"] = execution_preview.get("mode")
-                            alert_g["execution_live_safe"] = execution_preview.get("live_safe")
-                            alert_g["execution_live_safety_reason"] = execution_preview.get("live_safety_reason")
-                            alert_g["execution_preview_payload"] = execution_preview.get("payload")
-
-                            preview_order_data = execution_preview.get("preview", {}).get("order", {})
-                            alert_g["execution_preview_action"] = preview_order_data.get("action")
-                            alert_g["execution_preview_outcome_side"] = preview_order_data.get("outcomeSide")
-                            alert_g["execution_preview_quantity"] = preview_order_data.get("quantity")
-
-                            print(
-                                "[ORDER PREVIEW OK] "
-                                f"market={execution_slug} "
-                                f"outcome={execution_outcome} "
-                                f"price={execution_price} "
-                                f"quantity={alert_g.get('execution_preview_quantity')} "
-                                f"mode={alert_g.get('execution_preview_mode')} "
-                                f"live_safe={alert_g.get('execution_live_safe')} "
-                                f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
                             )
 
                         except Exception as e:
-                            alert_g["execution_preview_status"] = "PREVIEW_FAILED"
-                            alert_g["execution_preview_error"] = str(e)
-
-                            error_text = str(e)
-
-                            if "market not found" in error_text.lower():
-                                UNAVAILABLE_EXECUTION_MARKETS.add(str(execution_slug))
+                            recent_execution_record = None
 
                             print(
-                                "[ORDER PREVIEW FAILED] "
+                                "[ORDER EXECUTION LEDGER CHECK FAILED] "
                                 f"market={execution_slug} "
                                 f"outcome={execution_outcome} "
                                 f"price={execution_price} "
                                 f"error={e}"
                             )
+
+                        if recent_execution_record:
+                            alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
+                            alert_g["execution_preview_skip_reason"] = "recent_execution_ledger_match"
+
+                            print(
+                                "[ORDER PREVIEW SKIPPED] "
+                                f"market={execution_slug} "
+                                f"outcome={alert_g.get('outcome')} "
+                                f"price={execution_price} "
+                                "reason=recent_execution_ledger_match"
+                            )
+
+                        else:
+                            try:
+                                from execution import execute_order_safely, record_execution_attempt
+
+                                derived_edge_percent = (
+                                    alert_g.get("edge_percent")
+                                    if alert_g.get("edge_percent") is not None
+                                    else alert_g.get("edge")
+                                    if alert_g.get("edge") is not None
+                                    else alert_g.get("edge_pct")
+                                    if alert_g.get("edge_pct") is not None
+                                    else alert_g.get("edge_percent_value")
+                                    if alert_g.get("edge_percent_value") is not None
+                                    else (
+                                        (
+                                            (
+                                                float(alert_g.get("fair_price"))
+                                                - float(alert_g.get("current_price"))
+                                            )
+                                            / float(alert_g.get("current_price"))
+                                        )
+                                        * 100
+                                        if alert_g.get("fair_price") is not None
+                                        and alert_g.get("current_price") is not None
+                                        and float(alert_g.get("current_price")) > 0
+                                        else None
+                                    )
+                                )
+
+                                derived_since_last_buy_s = (
+                                    alert_g.get("since_last_buy_s")
+                                    if alert_g.get("since_last_buy_s") is not None
+                                    else alert_g.get("since_last_buy_seconds")
+                                    if alert_g.get("since_last_buy_seconds") is not None
+                                    else alert_g.get("seconds_since_last_buy")
+                                    if alert_g.get("seconds_since_last_buy") is not None
+                                    else alert_g.get("since_last_buy")
+                                )
+
+                                execution_preview = execute_order_safely(
+                                    market_slug=execution_slug,
+                                    outcome=execution_outcome,
+                                    price=execution_price,
+                                    max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
+                                    signal_context={
+                                        "edge_percent": derived_edge_percent,
+                                        "since_last_buy_s": derived_since_last_buy_s,
+                                        "market_phase": alert_g.get("market_phase"),
+                                        "stake_percent": (
+                                            alert_g.get("stake_percent")
+                                            if alert_g.get("stake_percent") is not None
+                                            else alert_g.get("stake_pct")
+                                        ),
+                                    },
+                                )
+
+                                alert_g["execution_preview_status"] = "PREVIEW_OK"
+                                alert_g["execution_preview_mode"] = execution_preview.get("mode")
+                                alert_g["execution_live_safe"] = execution_preview.get("live_safe")
+                                alert_g["execution_live_safety_reason"] = execution_preview.get("live_safety_reason")
+                                alert_g["execution_preview_payload"] = execution_preview.get("payload")
+
+                                preview_order_data = execution_preview.get("preview", {}).get("order", {})
+                                alert_g["execution_preview_action"] = preview_order_data.get("action")
+                                alert_g["execution_preview_outcome_side"] = preview_order_data.get("outcomeSide")
+                                alert_g["execution_preview_quantity"] = preview_order_data.get("quantity")
+
+                                record_execution_attempt(
+                                    market_slug=execution_slug,
+                                    outcome=execution_outcome,
+                                    price=execution_price,
+                                    mode=execution_preview.get("mode"),
+                                    status="PREVIEW_OK",
+                                    live_safe=execution_preview.get("live_safe"),
+                                    live_safety_reason=execution_preview.get("live_safety_reason"),
+                                    payload=execution_preview.get("payload"),
+                                    preview=execution_preview.get("preview"),
+                                    order=execution_preview.get("order"),
+                                )
+
+                                print(
+                                    "[ORDER PREVIEW OK] "
+                                    f"market={execution_slug} "
+                                    f"outcome={execution_outcome} "
+                                    f"price={execution_price} "
+                                    f"quantity={alert_g.get('execution_preview_quantity')} "
+                                    f"mode={alert_g.get('execution_preview_mode')} "
+                                    f"live_safe={alert_g.get('execution_live_safe')} "
+                                    f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
+                                )
+
+                            except Exception as e:
+                                alert_g["execution_preview_status"] = "PREVIEW_FAILED"
+                                alert_g["execution_preview_error"] = str(e)
+
+                                error_text = str(e)
+
+                                if "market not found" in error_text.lower():
+                                    UNAVAILABLE_EXECUTION_MARKETS.add(str(execution_slug))
+
+                                try:
+                                    from execution import record_execution_attempt
+
+                                    record_execution_attempt(
+                                        market_slug=execution_slug,
+                                        outcome=execution_outcome,
+                                        price=execution_price,
+                                        mode="PREVIEW_FAILED",
+                                        status="PREVIEW_FAILED",
+                                        error=e,
+                                    )
+
+                                except Exception as ledger_error:
+                                    print(
+                                        "[ORDER EXECUTION LEDGER WRITE FAILED] "
+                                        f"market={execution_slug} "
+                                        f"outcome={execution_outcome} "
+                                        f"price={execution_price} "
+                                        f"error={ledger_error}"
+                                    )
+
+                                print(
+                                    "[ORDER PREVIEW FAILED] "
+                                    f"market={execution_slug} "
+                                    f"outcome={execution_outcome} "
+                                    f"price={execution_price} "
+                                    f"error={e}"
+                                )
 
                     else:
                         alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
