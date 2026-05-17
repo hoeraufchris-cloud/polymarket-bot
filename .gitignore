@@ -18,3 +18,16 @@ tracked_bets_export.csv
 # Exports
 *.csv
 *.xlsx
+# Local/private files
+.DS_Store
+*.txt
+all_alerts.json
+Polymarket API Key IDs.txt
+
+# Local exported/debug files
+export_resolved_bets.py
+match_actual_bets_to_tracked.py
+pull_polymarket_wallet.py
+test_us_market_lookup.py
+Polymarket Bot - Market Model Tracking.html
+Polymarket Bot - Market Model Tracking_files/
