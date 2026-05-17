@@ -12,6 +12,13 @@ DEFAULT_MAX_ORDER_USD = Decimal(os.getenv("MAX_ORDER_USD", "25"))
 DEFAULT_ORDER_TYPE = os.getenv("POLYMARKET_ORDER_TYPE", "ORDER_TYPE_LIMIT")
 DEFAULT_TIME_IN_FORCE = os.getenv("POLYMARKET_TIME_IN_FORCE", "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL")
 
+LIVE_ORDER_CREATE_CONFIRMATION = os.getenv("LIVE_ORDER_CREATE_CONFIRMATION", "") == "I_UNDERSTAND_THIS_PLACES_REAL_BETS"
+LIVE_ORDER_MIN_EDGE_PERCENT = Decimal(os.getenv("LIVE_ORDER_MIN_EDGE_PERCENT", "3"))
+LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS = int(os.getenv("LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS", "120"))
+LIVE_ORDER_MIN_PRICE = Decimal(os.getenv("LIVE_ORDER_MIN_PRICE", "0.05"))
+LIVE_ORDER_MAX_PRICE = Decimal(os.getenv("LIVE_ORDER_MAX_PRICE", "0.95"))
+
+
 
 def get_polymarket_client():
     if not POLYMARKET_KEY_ID:
@@ -97,14 +104,66 @@ def convert_feed_slug_to_us_slug(market_slug):
         return slug
 
     converted = slug.replace("nba-sas-", "nba-sa-")
+    converted = converted.replace("mlb-oak-", "mlb-ath-")
+    converted = converted.replace("-oak-", "-ath-")
 
-    supported_league_prefixes = ("nba-", "mlb-", "wnba-")
+    if converted.startswith(("aec-", "tsc-", "atc-", "asc-")):
+        return converted
 
-    if "-total-" in converted and converted.startswith(supported_league_prefixes):
+    total_league_prefixes = (
+        "nba-",
+        "mlb-",
+        "wnba-",
+        "mls-",
+        "lal-",
+        "epl-",
+        "sea-",
+        "scop-",
+        "chi-",
+        "j100-",
+        "j1100-",
+        "j2100-",
+    )
+
+    moneyline_league_prefixes = (
+        "nba-",
+        "mlb-",
+        "wnba-",
+        "atp-",
+        "wta-",
+    )
+
+    soccer_league_prefixes = (
+        "mls-",
+        "lal-",
+        "epl-",
+        "sea-",
+        "scop-",
+        "chi-",
+    )
+
+    tennis_league_prefixes = (
+        "atp-",
+        "wta-",
+        "j100-",
+        "j1100-",
+        "j2100-",
+    )
+
+    if "-total-" in converted and converted.startswith(total_league_prefixes):
         converted = converted.replace("-total-", "-")
         return "tsc-" + converted
 
-    if converted.startswith(supported_league_prefixes):
+    if converted.startswith(("nba-", "mlb-", "wnba-")):
+        return "aec-" + converted
+
+    if converted.startswith(soccer_league_prefixes):
+        return "atc-" + converted
+
+    if converted.startswith(tennis_league_prefixes):
+        return "aec-" + converted
+
+    if converted.startswith(moneyline_league_prefixes):
         return "aec-" + converted
 
     return converted
@@ -115,22 +174,8 @@ def is_supported_execution_market(market_slug):
     if not slug:
         return False, "missing_slug"
 
-    supported_league_prefixes = ("nba-", "mlb-", "wnba-")
-
-    if not slug.startswith(supported_league_prefixes):
-        return False, "unsupported_league_or_prefix"
-
     unsupported_markers = [
         "-spread-",
-        "-btbs",
-        "-btts",
-        "-draw",
-        "-f5-",
-        "-1h-",
-        "-1q-",
-        "-2q-",
-        "-3q-",
-        "-4q-",
         "-player-",
         "-props-",
     ]
@@ -139,10 +184,7 @@ def is_supported_execution_market(market_slug):
         if marker in slug:
             return False, f"unsupported_market_type:{marker}"
 
-    if "-total-" in slug:
-        return True, "supported_total"
-
-    return True, "supported_moneyline"
+    return True, "attempt_once_preview_candidate"
 
 def build_order_payload(
     market_slug,
@@ -208,11 +250,51 @@ def preview_order(
     }
 
 
-def place_order(
+def validate_live_order_safety(price, signal_context=None):
+    signal_context = signal_context or {}
+    price_decimal = Decimal(str(price))
+
+    if price_decimal < LIVE_ORDER_MIN_PRICE:
+        return False, f"price_below_min:{price_decimal}"
+
+    if price_decimal > LIVE_ORDER_MAX_PRICE:
+        return False, f"price_above_max:{price_decimal}"
+
+    signal_age_seconds = signal_context.get("since_last_buy_s")
+
+    if signal_age_seconds is not None:
+        try:
+            signal_age_seconds = int(float(signal_age_seconds))
+
+            if signal_age_seconds > LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS:
+                return False, f"signal_too_old:{signal_age_seconds}s"
+
+        except Exception:
+            return False, f"invalid_signal_age:{signal_age_seconds}"
+
+    edge_percent = signal_context.get("edge_percent")
+
+    if edge_percent is None:
+        return False, "missing_edge_percent"
+
+    try:
+        edge_decimal = Decimal(str(edge_percent))
+
+        if edge_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
+            return False, f"edge_below_min:{edge_decimal}%"
+
+    except Exception:
+        return False, f"invalid_edge:{edge_percent}"
+
+    return True, "passed_live_order_safety"
+
+
+def execute_order_safely(
     market_slug,
     outcome,
     price,
     max_order_usd=None,
+    signal_context=None,
 ):
     client = get_polymarket_client()
 
@@ -223,25 +305,78 @@ def place_order(
         max_order_usd=max_order_usd,
     )
 
+    request_payload = {
+        "request": payload,
+    }
+
+    preview = client.orders.preview(request_payload)
+
+    live_safe, live_safety_reason = validate_live_order_safety(
+        price=payload["price"]["value"],
+        signal_context=signal_context,
+    )
+
     if not ENABLE_REAL_MONEY_ORDERS:
-        request_payload = {
-            "request": payload,
-        }
-
-        preview = client.orders.preview(request_payload)
-
         return {
             "mode": "PREVIEW_ONLY_REAL_ORDER_DISABLED",
             "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
+            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_safe": live_safe,
+            "live_safety_reason": live_safety_reason,
             "payload": payload,
             "request_payload": request_payload,
             "preview": preview,
         }
-    order = client.orders.create(payload)
+
+    if not LIVE_ORDER_CREATE_CONFIRMATION:
+        return {
+            "mode": "LIVE_ORDER_BLOCKED_CONFIRMATION_MISSING",
+            "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
+            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_safe": live_safe,
+            "live_safety_reason": "missing_live_order_create_confirmation",
+            "payload": payload,
+            "request_payload": request_payload,
+            "preview": preview,
+        }
+
+    if not live_safe:
+        return {
+            "mode": "LIVE_ORDER_BLOCKED_SAFETY_CHECK",
+            "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
+            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_safe": live_safe,
+            "live_safety_reason": live_safety_reason,
+            "payload": payload,
+            "request_payload": request_payload,
+            "preview": preview,
+        }
+
+    order = client.orders.create(request_payload)
 
     return {
         "mode": "LIVE_ORDER_PLACED",
         "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
+        "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+        "live_safe": live_safe,
+        "live_safety_reason": live_safety_reason,
         "payload": payload,
+        "request_payload": request_payload,
+        "preview": preview,
         "order": order,
     }
+
+
+def place_order(
+    market_slug,
+    outcome,
+    price,
+    max_order_usd=None,
+):
+    return execute_order_safely(
+        market_slug=market_slug,
+        outcome=outcome,
+        price=price,
+        max_order_usd=max_order_usd,
+        signal_context=None,
+    )

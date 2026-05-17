@@ -7363,17 +7363,43 @@ if __name__ == "__main__":
 
                     elif execution_slug and execution_price and execution_outcome and execution_supported:
                         try:
-                            from execution import preview_order
+                            from execution import execute_order_safely
 
-                            execution_preview = preview_order(
+                            execution_preview = execute_order_safely(
                                 market_slug=execution_slug,
                                 outcome=execution_outcome,
                                 price=execution_price,
                                 max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
+                                signal_context={
+                                    "edge_percent": (
+                                        alert_g.get("edge_percent")
+                                        if alert_g.get("edge_percent") is not None
+                                        else alert_g.get("edge")
+                                        if alert_g.get("edge") is not None
+                                        else alert_g.get("edge_pct")
+                                        if alert_g.get("edge_pct") is not None
+                                        else alert_g.get("edge_percent_value")
+                                    ),
+                                    "since_last_buy_s": (
+                                        alert_g.get("since_last_buy_s")
+                                        if alert_g.get("since_last_buy_s") is not None
+                                        else alert_g.get("since_last_buy_seconds")
+                                        if alert_g.get("since_last_buy_seconds") is not None
+                                        else alert_g.get("seconds_since_last_buy")
+                                    ),
+                                    "market_phase": alert_g.get("market_phase"),
+                                    "stake_percent": (
+                                        alert_g.get("stake_percent")
+                                        if alert_g.get("stake_percent") is not None
+                                        else alert_g.get("stake_pct")
+                                    ),
+                                },
                             )
 
                             alert_g["execution_preview_status"] = "PREVIEW_OK"
                             alert_g["execution_preview_mode"] = execution_preview.get("mode")
+                            alert_g["execution_live_safe"] = execution_preview.get("live_safe")
+                            alert_g["execution_live_safety_reason"] = execution_preview.get("live_safety_reason")
                             alert_g["execution_preview_payload"] = execution_preview.get("payload")
 
                             preview_order_data = execution_preview.get("preview", {}).get("order", {})
@@ -7387,7 +7413,9 @@ if __name__ == "__main__":
                                 f"outcome={execution_outcome} "
                                 f"price={execution_price} "
                                 f"quantity={alert_g.get('execution_preview_quantity')} "
-                                f"mode={alert_g.get('execution_preview_mode')}"
+                                f"mode={alert_g.get('execution_preview_mode')} "
+                                f"live_safe={alert_g.get('execution_live_safe')} "
+                                f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
                             )
 
                         except Exception as e:
