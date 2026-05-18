@@ -197,7 +197,7 @@ def convert_feed_slug_to_us_slug(market_slug):
         return "atc-" + converted
 
     if converted.startswith(tennis_league_prefixes):
-        return "aec-" + converted
+        return converted
 
     if converted.startswith(moneyline_league_prefixes):
         return "aec-" + converted
@@ -260,18 +260,30 @@ def save_execution_ledger(rows):
 
 def get_recent_execution_record(market_slug, outcome, price):
     execution_key = make_execution_key(market_slug, outcome, price)
+    resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
     now_ts = time.time()
 
     for row in reversed(load_execution_ledger()):
-        if row.get("execution_key") != execution_key:
-            continue
-
         try:
             row_ts = float(row.get("timestamp", 0))
         except Exception:
             row_ts = 0
 
-        if now_ts - row_ts <= EXECUTION_DEDUPE_TTL_SECONDS:
+        if now_ts - row_ts > EXECUTION_DEDUPE_TTL_SECONDS:
+            continue
+
+        if row.get("execution_key") == execution_key:
+            return row
+
+        row_resolved_slug = str(row.get("resolved_market_slug") or "").strip()
+        row_error = str(row.get("error") or "").lower()
+        row_status = str(row.get("status") or "").upper()
+
+        if (
+            row_resolved_slug == resolved_market_slug
+            and row_status == "PREVIEW_FAILED"
+            and "market not found" in row_error
+        ):
             return row
 
     return None
