@@ -27,6 +27,11 @@ EXECUTION_LEDGER_PATH = os.getenv(
 EXECUTION_DEDUPE_TTL_SECONDS = int(os.getenv("EXECUTION_DEDUPE_TTL_SECONDS", "1800"))
 EXECUTION_LEDGER_MAX_ROWS = int(os.getenv("EXECUTION_LEDGER_MAX_ROWS", "5000"))
 
+EXECUTION_SLUG_ALIAS_PATH = os.getenv(
+    "EXECUTION_SLUG_ALIAS_PATH",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "execution_slug_aliases.json"),
+)
+
 
 
 def get_polymarket_client():
@@ -106,11 +111,33 @@ def map_outcome_to_order_intent(outcome, market_slug=None):
 
     raise ValueError(f"Unsupported outcome for automated order mapping: {outcome}")
 
+def load_execution_slug_aliases():
+    if not os.path.exists(EXECUTION_SLUG_ALIAS_PATH):
+        return {}
+
+    try:
+        with open(EXECUTION_SLUG_ALIAS_PATH, "r") as f:
+            aliases = json.load(f)
+
+        if isinstance(aliases, dict):
+            return aliases
+
+        return {}
+
+    except Exception:
+        return {}
+
+
 def convert_feed_slug_to_us_slug(market_slug):
     slug = str(market_slug or "").strip()
 
     if not slug:
         return slug
+
+    slug_aliases = load_execution_slug_aliases()
+
+    if slug in slug_aliases:
+        return slug_aliases[slug]
 
     converted = slug.replace("nba-sas-", "nba-sa-")
     converted = converted.replace("mlb-oak-", "mlb-ath-")
