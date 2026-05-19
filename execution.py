@@ -211,17 +211,29 @@ def is_supported_execution_market(market_slug):
     if not slug:
         return False, "missing_slug"
 
+    supported_league_prefixes = (
+        "nba-",
+        "mlb-",
+        "wnba-",
+    )
+
+    if not slug.startswith(supported_league_prefixes):
+        return False, "unsupported_league_or_prefix"
+
     unsupported_markers = [
         "-spread-",
         "-player-",
         "-props-",
+        "-btts",
+        "-btbs",
+        "-draw",
     ]
 
     for marker in unsupported_markers:
         if marker in slug:
             return False, f"unsupported_market_type:{marker}"
 
-    return True, "attempt_once_preview_candidate"
+    return True, "supported_execution_candidate"
 
 
 def make_execution_key(market_slug, outcome, price):
