@@ -236,6 +236,48 @@ def is_supported_execution_market(market_slug):
     return True, "supported_execution_candidate"
 
 
+def is_live_order_whitelisted_market(market_slug):
+    slug = str(market_slug or "").strip().lower()
+
+    if not slug:
+        return False, "missing_slug"
+
+    resolved_slug = convert_feed_slug_to_us_slug(slug)
+
+    supported_live_prefixes = (
+        "aec-nba-",
+        "aec-mlb-",
+        "aec-wnba-",
+        "tsc-nba-",
+        "tsc-mlb-",
+        "tsc-wnba-",
+    )
+
+    if not resolved_slug.startswith(supported_live_prefixes):
+        return False, "live_order_unsupported_league_or_prefix"
+
+    unsupported_live_markers = [
+        "-spread-",
+        "-player-",
+        "-props-",
+        "-btts",
+        "-btbs",
+        "-draw",
+        "-1h-",
+        "-1q-",
+        "-2q-",
+        "-3q-",
+        "-4q-",
+        "-f5-",
+    ]
+
+    for marker in unsupported_live_markers:
+        if marker in resolved_slug:
+            return False, f"live_order_unsupported_market_type:{marker}"
+
+    return True, "passed_live_order_market_whitelist"
+
+
 def make_execution_key(market_slug, outcome, price):
     resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
     normalized_price = normalize_price(price)
@@ -478,6 +520,12 @@ def execute_order_safely(
         signal_context=signal_context,
     )
 
+    live_whitelisted, live_whitelist_reason = is_live_order_whitelisted_market(market_slug)
+
+    if not live_whitelisted:
+        live_safe = False
+        live_safety_reason = live_whitelist_reason
+
     if not ENABLE_REAL_MONEY_ORDERS:
         return {
             "mode": "PREVIEW_ONLY_REAL_ORDER_DISABLED",
@@ -485,6 +533,8 @@ def execute_order_safely(
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
             "live_safe": live_safe,
             "live_safety_reason": live_safety_reason,
+            "live_order_market_whitelisted": live_whitelisted,
+            "live_order_market_whitelist_reason": live_whitelist_reason,
             "payload": payload,
             "request_payload": request_payload,
             "preview": preview,
@@ -497,6 +547,8 @@ def execute_order_safely(
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
             "live_safe": live_safe,
             "live_safety_reason": "missing_live_order_create_confirmation",
+            "live_order_market_whitelisted": live_whitelisted,
+            "live_order_market_whitelist_reason": live_whitelist_reason,
             "payload": payload,
             "request_payload": request_payload,
             "preview": preview,
@@ -509,6 +561,8 @@ def execute_order_safely(
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
             "live_safe": live_safe,
             "live_safety_reason": live_safety_reason,
+            "live_order_market_whitelisted": live_whitelisted,
+            "live_order_market_whitelist_reason": live_whitelist_reason,
             "payload": payload,
             "request_payload": request_payload,
             "preview": preview,
@@ -522,6 +576,8 @@ def execute_order_safely(
         "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
         "live_safe": live_safe,
         "live_safety_reason": live_safety_reason,
+        "live_order_market_whitelisted": live_whitelisted,
+        "live_order_market_whitelist_reason": live_whitelist_reason,
         "payload": payload,
         "request_payload": request_payload,
         "preview": preview,
