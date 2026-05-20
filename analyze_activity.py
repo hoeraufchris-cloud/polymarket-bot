@@ -268,6 +268,71 @@ ALERT_QUALITY_PREGAME_EVENISH_MIN_SCORE = 85
 ALERT_QUALITY_PREGAME_EVENISH_MIN_CONSENSUS = 70
 ALERT_QUALITY_PREGAME_EVENISH_MIN_SIZE_RATIO = 3.0
 
+UNRESOLVED_EXECUTION_MARKETS_PATH = os.path.join(DATA_DIR, "unresolved_execution_markets.json")
+
+
+def load_unresolved_execution_markets():
+    if not os.path.exists(UNRESOLVED_EXECUTION_MARKETS_PATH):
+        return {}
+
+    try:
+        with open(UNRESOLVED_EXECUTION_MARKETS_PATH, "r") as f:
+            data = json.load(f)
+
+        if isinstance(data, dict):
+            return data
+
+        return {}
+
+    except Exception:
+        return {}
+
+
+def save_unresolved_execution_markets(data):
+    os.makedirs(os.path.dirname(UNRESOLVED_EXECUTION_MARKETS_PATH), exist_ok=True)
+
+    with open(UNRESOLVED_EXECUTION_MARKETS_PATH, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+def record_unresolved_execution_market(alert_g, execution_slug, execution_outcome, execution_price, error_text):
+    unresolved = load_unresolved_execution_markets()
+
+    key = f"{execution_slug}||{execution_outcome}"
+
+    existing = unresolved.get(key, {})
+
+    existing["feed_market_slug"] = execution_slug
+    existing["market"] = alert_g.get("market")
+    existing["outcome"] = alert_g.get("outcome")
+    existing["normalized_outcome"] = execution_outcome
+    existing["last_price"] = execution_price
+    existing["current_price"] = alert_g.get("current_price")
+    existing["fair_price"] = alert_g.get("fair_price")
+    existing["edge_percent"] = (
+        alert_g.get("edge_percent")
+        if alert_g.get("edge_percent") is not None
+        else alert_g.get("edge")
+        if alert_g.get("edge") is not None
+        else alert_g.get("edge_pct")
+    )
+    existing["stake_percent"] = (
+        alert_g.get("stake_percent")
+        if alert_g.get("stake_percent") is not None
+        else alert_g.get("stake_pct")
+    )
+    existing["market_phase"] = alert_g.get("market_phase")
+    existing["event_start"] = alert_g.get("event_start")
+    existing["last_error"] = error_text
+    existing["last_seen_ts"] = time.time()
+    existing["seen_count"] = int(existing.get("seen_count", 0)) + 1
+    existing["verified_us_slug"] = existing.get("verified_us_slug")
+    existing["alias_status"] = existing.get("alias_status", "unresolved")
+
+    unresolved[key] = existing
+
+    save_unresolved_execution_markets(unresolved)
+
 def get_structural_hard_fail_reason(g):
     if not isinstance(g, dict):
         return None
@@ -7494,6 +7559,24 @@ if __name__ == "__main__":
                                 if "market not found" in error_text.lower():
                                     UNAVAILABLE_EXECUTION_MARKETS.add(str(execution_slug))
 
+                                    try:
+                                        record_unresolved_execution_market(
+                                            alert_g=alert_g,
+                                            execution_slug=execution_slug,
+                                            execution_outcome=execution_outcome,
+                                            execution_price=execution_price,
+                                            error_text=error_text,
+                                        )
+
+                                    except Exception as unresolved_error:
+                                        print(
+                                            "[UNRESOLVED EXECUTION MARKET WRITE FAILED] "
+                                            f"market={execution_slug} "
+                                            f"outcome={execution_outcome} "
+                                            f"price={execution_price} "
+                                            f"error={unresolved_error}"
+                                        )
+
                                 try:
                                     from execution import record_execution_attempt
 
@@ -7526,6 +7609,28 @@ if __name__ == "__main__":
                     else:
                         alert_g["execution_preview_status"] = "PREVIEW_SKIPPED"
                         alert_g["execution_preview_skip_reason"] = execution_skip_reason
+
+                        if (
+                            execution_skip_reason == "unsupported_league_or_prefix"
+                            or str(execution_skip_reason).startswith("unsupported_market_type:")
+                        ):
+                            try:
+                                record_unresolved_execution_market(
+                                    alert_g=alert_g,
+                                    execution_slug=execution_slug,
+                                    execution_outcome=execution_outcome,
+                                    execution_price=execution_price,
+                                    error_text=f"preview_skipped:{execution_skip_reason}",
+                                )
+
+                            except Exception as unresolved_error:
+                                print(
+                                    "[UNRESOLVED EXECUTION MARKET WRITE FAILED] "
+                                    f"market={execution_slug} "
+                                    f"outcome={execution_outcome} "
+                                    f"price={execution_price} "
+                                    f"error={unresolved_error}"
+                                )
 
                         print(
                             "[ORDER PREVIEW SKIPPED] "
