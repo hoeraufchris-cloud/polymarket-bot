@@ -6,6 +6,7 @@ except Exception as e:
     print(f"[SSL] truststore not active: {e}")
 
 import json
+import csv
 def log_alert(bet):
     try:
         with open("all_alerts.json", "r") as f:
@@ -218,6 +219,7 @@ ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
 TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
+INSIDER_DIAGNOSTICS_CSV_PATH = f"{DATA_DIR}/insider_diagnostics.csv"
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -243,6 +245,15 @@ BET_ALERT_HARD_MIN_SIZE_RATIO = 1.0
 BET_ALERT_HARD_PRE_EVENISH_MIN_SIZE_RATIO = 5.0
 BET_ALERT_PRE_EARLY_SCORE_BONUS = 5
 BET_ALERT_PRE_LEADER_SCORE_PENALTY = 5
+
+INSIDER_DIAGNOSTICS_ENABLED = True
+INSIDER_DIAGNOSTIC_MIN_NOTIONAL = 500
+INSIDER_DIAGNOSTIC_MIN_SIZE_RATIO = 3.0
+INSIDER_DIAGNOSTIC_STRONG_SIZE_RATIO = 10.0
+INSIDER_DIAGNOSTIC_MIN_LEADERBOARD_ROI = 0.02
+INSIDER_DIAGNOSTIC_STRONG_LEADERBOARD_ROI = 0.05
+INSIDER_DIAGNOSTIC_MIN_WALLET_RESOLVED = 3
+INSIDER_DIAGNOSTIC_STRONG_WIN_RATE = 55.0
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
@@ -2577,6 +2588,16 @@ def attach_position_data_and_score(
 
         scored.append(g)
 
+
+    if INSIDER_DIAGNOSTICS_ENABLED:
+        scored = [
+            attach_insider_diagnostics(g, wallet_profiles)
+            if isinstance(g, dict)
+            else g
+            for g in scored
+        ]
+
+
     return scored
 
 def build_cross_wallet_consensus(accumulation_groups, scored_candidates, wallet_profiles):
@@ -3370,6 +3391,178 @@ def save_signal_metrics_history(signal_metrics_history):
         print(f"[Signal metrics history save error] {repr(e)}")
 
 
+INSIDER_DIAGNOSTIC_CSV_HEADERS = [
+    "export_key",
+    "ts",
+    "export_bucket_5m",
+    "wallet",
+    "slug",
+    "market",
+    "outcome",
+    "label",
+    "score",
+    "stake_pct",
+    "sport_bucket",
+    "market_type_bucket",
+    "market_phase",
+    "insider_category_key",
+    "insider_candidate",
+    "insider_quality",
+    "insider_leaderboard_roi",
+    "insider_resolved_bets",
+    "insider_resolved_win_rate",
+    "insider_price_drift_cents",
+    "insider_adverse_drift",
+    "insider_heavy_adverse_drift",
+    "total_notional",
+    "total_size",
+    "size_ratio",
+    "buy_count",
+    "avg_trade_price",
+    "current_price",
+    "wallet_entry_price",
+    "edge_pct",
+    "market_movement_cents",
+    "seconds_since_last_buy",
+    "sequence_role",
+    "consensus_type",
+    "consensus_score",
+    "event_start_time",
+]
+
+
+def _csv_safe(value):
+    if value is None:
+        return ""
+
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, sort_keys=True)
+        except Exception:
+            return str(value)
+
+    return value
+
+
+def append_insider_diagnostics_csv(scored_candidates, now_ts):
+    if not INSIDER_DIAGNOSTICS_ENABLED:
+        return 0
+
+    if not isinstance(scored_candidates, list):
+        return 0
+
+    try:
+        now_ts = int(now_ts)
+    except Exception:
+        now_ts = int(time.time())
+
+    export_bucket_5m = int(now_ts // 300)
+
+    os.makedirs(os.path.dirname(INSIDER_DIAGNOSTICS_CSV_PATH), exist_ok=True)
+
+    file_exists = (
+        os.path.exists(INSIDER_DIAGNOSTICS_CSV_PATH)
+        and os.path.getsize(INSIDER_DIAGNOSTICS_CSV_PATH) > 0
+    )
+
+    existing_keys = set()
+
+    if file_exists:
+        try:
+            with open(INSIDER_DIAGNOSTICS_CSV_PATH, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    export_key = str(row.get("export_key", "") or "").strip()
+                    if export_key:
+                        existing_keys.add(export_key)
+        except Exception as e:
+            print(f"[INSIDER CSV READ ERROR] {repr(e)}")
+
+    rows_to_write = []
+
+    for g in scored_candidates:
+        if not isinstance(g, dict):
+            continue
+
+        if not bool(g.get("insider_candidate", False)):
+            continue
+
+        wallet = str(g.get("wallet", "") or "").strip().lower()
+        slug = str(g.get("slug", "") or "").strip()
+        outcome = str(g.get("outcome", "") or "").strip()
+
+        if not wallet or not slug or not outcome:
+            continue
+
+        export_key = f"{export_bucket_5m}||{slug}||{outcome}||{wallet}"
+
+        if export_key in existing_keys:
+            continue
+
+        row = {
+            "export_key": export_key,
+            "ts": now_ts,
+            "export_bucket_5m": export_bucket_5m,
+            "wallet": wallet,
+            "slug": slug,
+            "market": str(g.get("market") or g.get("title") or "").strip(),
+            "outcome": outcome,
+            "label": str(g.get("label", "") or "").strip(),
+            "score": g.get("score"),
+            "stake_pct": g.get("stake_pct"),
+            "sport_bucket": str(g.get("sport_bucket", "") or "").strip(),
+            "market_type_bucket": str(g.get("market_type_bucket", "") or "").strip(),
+            "market_phase": str(g.get("market_phase", "") or "").strip(),
+            "insider_category_key": str(g.get("insider_category_key", "") or "").strip(),
+            "insider_candidate": bool(g.get("insider_candidate", False)),
+            "insider_quality": str(g.get("insider_quality", "") or "").strip(),
+            "insider_leaderboard_roi": g.get("insider_leaderboard_roi"),
+            "insider_resolved_bets": g.get("insider_resolved_bets"),
+            "insider_resolved_win_rate": g.get("insider_resolved_win_rate"),
+            "insider_price_drift_cents": g.get("insider_price_drift_cents"),
+            "insider_adverse_drift": bool(g.get("insider_adverse_drift", False)),
+            "insider_heavy_adverse_drift": bool(g.get("insider_heavy_adverse_drift", False)),
+            "total_notional": g.get("total_notional"),
+            "total_size": g.get("total_size"),
+            "size_ratio": g.get("size_ratio"),
+            "buy_count": g.get("buy_count"),
+            "avg_trade_price": g.get("avg_trade_price"),
+            "current_price": g.get("current_price"),
+            "wallet_entry_price": g.get("wallet_entry_price"),
+            "edge_pct": g.get("edge_pct"),
+            "market_movement_cents": g.get("market_movement_cents"),
+            "seconds_since_last_buy": g.get("seconds_since_last_buy"),
+            "sequence_role": str(g.get("sequence_role", "") or "").strip(),
+            "consensus_type": str(g.get("consensus_type", "") or "").strip(),
+            "consensus_score": g.get("consensus_score"),
+            "event_start_time": g.get("event_start_time"),
+        }
+
+        rows_to_write.append({
+            header: _csv_safe(row.get(header))
+            for header in INSIDER_DIAGNOSTIC_CSV_HEADERS
+        })
+        existing_keys.add(export_key)
+
+    if not rows_to_write:
+        return 0
+
+    try:
+        with open(INSIDER_DIAGNOSTICS_CSV_PATH, "a", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=INSIDER_DIAGNOSTIC_CSV_HEADERS)
+
+            if not file_exists:
+                writer.writeheader()
+
+            writer.writerows(rows_to_write)
+
+        return len(rows_to_write)
+
+    except Exception as e:
+        print(f"[INSIDER CSV WRITE ERROR] {repr(e)}")
+        return 0
+
+
 def make_signal_metrics_cycle_key(g):
     if not isinstance(g, dict):
         return None
@@ -3883,6 +4076,17 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
         "event_start_time": event_start_time,
         "minutes_to_start": minutes_to_start,
         "time_to_start_bucket": time_to_start_bucket,
+        "sport_bucket": str(g.get("sport_bucket", "") or "").strip(),
+        "market_type_bucket": str(g.get("market_type_bucket", "") or "").strip(),
+        "insider_category_key": str(g.get("insider_category_key", "") or "").strip(),
+        "insider_candidate": bool(g.get("insider_candidate", False)),
+        "insider_quality": str(g.get("insider_quality", "") or "").strip(),
+        "insider_leaderboard_roi": g.get("insider_leaderboard_roi"),
+        "insider_price_drift_cents": g.get("insider_price_drift_cents"),
+        "insider_adverse_drift": bool(g.get("insider_adverse_drift", False)),
+        "insider_heavy_adverse_drift": bool(g.get("insider_heavy_adverse_drift", False)),
+        "insider_resolved_bets": g.get("insider_resolved_bets"),
+        "insider_resolved_win_rate": g.get("insider_resolved_win_rate"),
     }
 
     signal_metrics_history.append(row)
@@ -6463,6 +6667,12 @@ def get_signal_sport_bucket(g):
         or "serie a" in combined
         or "la liga" in combined
         or "champions league" in combined
+        or "lal-" in combined
+        or "sea-" in combined
+        or "cde-" in combined
+        or "scop-" in combined
+        or "chi-" in combined
+        or "atc-" in combined
     ):
         return "Soccer"
     if (
@@ -6509,6 +6719,146 @@ def get_signal_odds_bucket(g):
         return "+110 to +150"
     return "+150+"
 
+def get_signal_market_type_bucket(g):
+    if not isinstance(g, dict):
+        return "Other"
+
+    market_text = str(g.get("market") or g.get("title") or g.get("question") or "").strip().lower()
+    outcome_text = str(g.get("outcome", "") or "").strip().lower()
+    slug_text = str(g.get("slug", "") or "").strip().lower()
+    combined = f"{market_text} | {outcome_text} | {slug_text}"
+
+    if (
+        "total" in combined
+        or "o/u" in combined
+        or outcome_text in {"over", "under"}
+        or "-total-" in combined
+    ):
+        return "Total"
+
+    if "spread" in combined or "-spread-" in combined:
+        return "Spread"
+
+    if (
+        "moneyline" in combined
+        or "-ml-" in combined
+        or "-winner" in combined
+        or " will " in f" {market_text} "
+        or " win on " in market_text
+        or market_text.startswith("will ")
+        or outcome_text in {"yes", "no"}
+        or (
+            " vs. " in market_text
+            and outcome_text not in {"over", "under", "yes", "no"}
+        )
+    ):
+        return "Moneyline"
+
+    if any(token in combined for token in ["points", "rebounds", "assists", "player"]):
+        return "Player Prop"
+
+    return "Other"
+
+
+def attach_insider_diagnostics(g, wallet_profiles):
+    if not isinstance(g, dict):
+        return g
+
+    g = dict(g)
+
+    sport_bucket = get_signal_sport_bucket(g)
+    market_type_bucket = get_signal_market_type_bucket(g)
+    market_phase = str(g.get("market_phase", "") or "").strip() or "Unknown"
+    category_key = f"{sport_bucket}/{market_type_bucket}/{market_phase}"
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    wallet_profile = {}
+    if isinstance(wallet_profiles, dict):
+        wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
+    try:
+        leaderboard_roi = wallet_profile.get("leaderboard_roi")
+        leaderboard_roi = float(leaderboard_roi) if leaderboard_roi is not None else None
+    except Exception:
+        leaderboard_roi = None
+
+    try:
+        resolved_bets = int(wallet_profile.get("resolved_bets", 0) or 0)
+    except Exception:
+        resolved_bets = 0
+
+    try:
+        resolved_win_rate = wallet_profile.get("resolved_win_rate")
+        resolved_win_rate = float(resolved_win_rate) if resolved_win_rate is not None else None
+    except Exception:
+        resolved_win_rate = None
+
+    try:
+        total_notional = float(g.get("total_notional", 0) or 0)
+    except Exception:
+        total_notional = 0.0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    try:
+        price_drift_cents = round(float(g.get("price_drift", 0) or 0) * 100, 2)
+    except Exception:
+        price_drift_cents = None
+
+    roi_good = leaderboard_roi is not None and leaderboard_roi >= INSIDER_DIAGNOSTIC_MIN_LEADERBOARD_ROI
+    roi_strong = leaderboard_roi is not None and leaderboard_roi >= INSIDER_DIAGNOSTIC_STRONG_LEADERBOARD_ROI
+    result_good = (
+        resolved_bets >= INSIDER_DIAGNOSTIC_MIN_WALLET_RESOLVED
+        and resolved_win_rate is not None
+        and resolved_win_rate >= INSIDER_DIAGNOSTIC_STRONG_WIN_RATE
+    )
+    relative_size_good = size_ratio >= INSIDER_DIAGNOSTIC_MIN_SIZE_RATIO
+    relative_size_strong = size_ratio >= INSIDER_DIAGNOSTIC_STRONG_SIZE_RATIO
+    notional_ok = total_notional >= INSIDER_DIAGNOSTIC_MIN_NOTIONAL
+
+    insider_candidate = (
+        notional_ok
+        and relative_size_good
+        and (roi_good or result_good)
+    )
+
+    adverse_drift = (
+        price_drift_cents is not None
+        and price_drift_cents >= 3.0
+    )
+
+    heavy_adverse_drift = (
+        price_drift_cents is not None
+        and price_drift_cents >= 5.0
+    )
+
+    insider_quality = "none"
+    if insider_candidate:
+        insider_quality = "watch"
+    if insider_candidate and relative_size_strong and (roi_strong or result_good):
+        insider_quality = "strong_watch"
+
+    if insider_candidate and adverse_drift:
+        insider_quality = "adverse_drift_watch"
+    if insider_candidate and heavy_adverse_drift:
+        insider_quality = "heavy_adverse_drift_watch"
+
+    g["sport_bucket"] = sport_bucket
+    g["market_type_bucket"] = market_type_bucket
+    g["insider_category_key"] = category_key
+    g["insider_leaderboard_roi"] = leaderboard_roi
+    g["insider_resolved_bets"] = resolved_bets
+    g["insider_resolved_win_rate"] = resolved_win_rate
+    g["insider_price_drift_cents"] = price_drift_cents
+    g["insider_adverse_drift"] = adverse_drift
+    g["insider_heavy_adverse_drift"] = heavy_adverse_drift
+    g["insider_candidate"] = insider_candidate
+    g["insider_quality"] = insider_quality
+
+    return g
 
 def get_alert_quality_block_reason(g, wallet_profiles):
     if not isinstance(g, dict):
@@ -7192,6 +7542,8 @@ if __name__ == "__main__":
     print(f"TRACKED_MODEL_BETS_PATH: {TRACKED_MODEL_BETS_PATH}")
     print(f"SIGNAL_METRICS_HISTORY_PATH: {SIGNAL_METRICS_HISTORY_PATH}")
     print(f"SIGNAL_STAGE_TRACKER_PATH: {SIGNAL_STAGE_TRACKER_PATH}")
+    print(f"INSIDER_DIAGNOSTICS_CSV_PATH: {INSIDER_DIAGNOSTICS_CSV_PATH}")
+    print(f"INSIDER_DIAGNOSTICS_CSV_PATH: {INSIDER_DIAGNOSTICS_CSV_PATH}")
     print(f"Loaded alerted bets: {len(alerted_bets)}")
     print(f"Loaded CLV tracker rows: {len(clv_tracker)}")
     print(f"Loaded tracked bets: {len(tracked_bets)}")
@@ -7316,6 +7668,60 @@ if __name__ == "__main__":
                     and str(g.get("label", "") or "").upper() in {"LEAN", "BET"}
                 )
             ]
+
+
+            insider_watch_candidates = [
+                g for g in result["scored_candidates"]
+                if (
+                    isinstance(g, dict)
+                    and bool(g.get("insider_candidate", False))
+                    and str(g.get("label", "") or "").upper() in {"PASS", "LEAN", "BET"}
+                )
+            ]
+
+            insider_watch_candidates = sorted(
+                insider_watch_candidates,
+                key=lambda x: (
+                    1 if str(x.get("insider_quality", "") or "") == "strong_watch" else 0,
+                    float(x.get("size_ratio", 0) or 0),
+                    float(x.get("total_notional", 0) or 0),
+                ),
+                reverse=True,
+            )
+
+            print(
+                f"[INSIDER WATCH] candidates={len(insider_watch_candidates)} "
+                f"strong={sum(1 for x in insider_watch_candidates if x.get('insider_quality') == 'strong_watch')}"
+            )
+
+            for insider_g in insider_watch_candidates[:3]:
+                try:
+                    insider_market = insider_g.get("market") or insider_g.get("title") or insider_g.get("slug")
+                    print(
+                        "[INSIDER WATCH TOP] "
+                        f"{insider_g.get('insider_quality', 'watch')} | "
+                        f"{insider_g.get('insider_category_key', 'N/A')} | "
+                        f"{insider_market} | "
+                        f"{insider_g.get('outcome')} | "
+                        f"label={insider_g.get('label')} | "
+                        f"notional=${float(insider_g.get('total_notional', 0) or 0):,.0f} | "
+                        f"ratio={float(insider_g.get('size_ratio', 0) or 0):.2f}x | "
+                        f"drift={insider_g.get('insider_price_drift_cents', 'N/A')}c"
+                    )
+                except Exception as e:
+                    print(f"[INSIDER WATCH PRINT ERROR] {repr(e)}")
+
+            insider_csv_written = append_insider_diagnostics_csv(
+                result["scored_candidates"],
+                result["now_ts"],
+            )
+
+            if insider_csv_written:
+                print(
+                    f"[INSIDER CSV] appended={insider_csv_written} "
+                    f"path={INSIDER_DIAGNOSTICS_CSV_PATH}"
+                )
+
 
             early_watch_thresholds = {
                 "min_size_ratio": 2.0,
