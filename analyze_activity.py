@@ -255,6 +255,17 @@ INSIDER_DIAGNOSTIC_STRONG_LEADERBOARD_ROI = 0.05
 INSIDER_DIAGNOSTIC_MIN_WALLET_RESOLVED = 3
 INSIDER_DIAGNOSTIC_STRONG_WIN_RATE = 55.0
 
+BET_ALERT_STRONG_UNIT_ROI_MIN_NOTIONAL = 500
+BET_ALERT_STRONG_UNIT_ROI_MIN_SIZE_RATIO = 10.0
+BET_ALERT_STRONG_UNIT_ROI_MIN_LEADERBOARD_ROI = 0.05
+BET_ALERT_STRONG_UNIT_ROI_MAX_CHASE_CENTS = 2.0
+BET_ALERT_STRONG_UNIT_ROI_SCORE_BONUS = 5
+BET_ALERT_ELITE_UNIT_ROI_SCORE_BONUS = 8
+
+BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS = 4.0
+BET_ALERT_MAX_LIVE_CHASE_CENTS = 2.0
+BET_ALERT_HEAVY_CHASE_REJECT_CENTS = 6.0
+
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
     "0xc8075693f48668a264b9fa313b47f52712fcc12b",
@@ -388,6 +399,50 @@ def apply_phase_sequence_score_adjustment(score, g):
             adjusted_score -= BET_ALERT_PRE_LEADER_SCORE_PENALTY
 
     return max(0, adjusted_score)
+
+def is_strong_unit_roi_signal(g, wallet_profiles):
+    if not isinstance(g, dict):
+        return False
+
+    try:
+        total_notional = float(g.get("total_notional", 0) or 0)
+    except Exception:
+        total_notional = 0.0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    try:
+        market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
+    except Exception:
+        market_movement_cents = 0.0
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    wallet_profile = {}
+    if isinstance(wallet_profiles, dict):
+        wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
+    leaderboard_roi = wallet_profile.get("leaderboard_roi")
+    try:
+        leaderboard_roi = float(leaderboard_roi) if leaderboard_roi is not None else None
+    except Exception:
+        leaderboard_roi = None
+
+    if total_notional < BET_ALERT_STRONG_UNIT_ROI_MIN_NOTIONAL:
+        return False
+
+    if size_ratio < BET_ALERT_STRONG_UNIT_ROI_MIN_SIZE_RATIO:
+        return False
+
+    if leaderboard_roi is None or leaderboard_roi < BET_ALERT_STRONG_UNIT_ROI_MIN_LEADERBOARD_ROI:
+        return False
+
+    if market_movement_cents > BET_ALERT_STRONG_UNIT_ROI_MAX_CHASE_CENTS:
+        return False
+
+    return True
 
 COMBINED_CA_BUNDLE_PATH = None
 
@@ -2027,13 +2082,31 @@ def attach_position_data_and_score(
         g["market_phase"] = "Live" if is_live else "Pre-Game"
 
         if is_live:
-            if float(g.get("edge_pct", 0) or 0) <= 0:
+            live_chase_cents = float(g.get("market_movement_cents", 0) or 0)
+
+            dynamic_live_chase_cents = BET_ALERT_MAX_LIVE_CHASE_CENTS
+            try:
+                dynamic_live_chase_cents = max(
+                    BET_ALERT_MAX_LIVE_CHASE_CENTS,
+                    float(g.get("max_price_drift_allowed", 0) or 0) * 100,
+                )
+            except Exception:
+                dynamic_live_chase_cents = BET_ALERT_MAX_LIVE_CHASE_CENTS
+
+            g["max_live_chase_cents"] = round(dynamic_live_chase_cents, 2)
+
+            if live_chase_cents > dynamic_live_chase_cents:
                 g["label"] = "PASS"
                 g["score"] = 0
                 g["stake_pct"] = 0
-                g["reason"] = f"Live market with no current edge ({g.get('edge_pct', 0)}%)"
+                g["reason"] = (
+                    f"Live market chase too high "
+                    f"(drift={round(live_chase_cents, 2)}c, "
+                    f"max={round(dynamic_live_chase_cents, 2)}c)"
+                )
                 scored.append(g)
                 continue
+
 
             if int(time_since_last_buy or 999999) > 60:
                 g["label"] = "PASS"
@@ -2043,21 +2116,32 @@ def attach_position_data_and_score(
                 scored.append(g)
                 continue
         else:
-            edge_pct = float(g.get("edge_pct", 0) or 0)
-            current_price_for_edge = float(g.get("current_price", 0) or 0)
+            pregame_chase_cents = float(g.get("market_movement_cents", 0) or 0)
 
-            if current_price_for_edge >= 0.65:
-                min_edge = 0.0
-            else:
-                min_edge = -2.0
+            max_pregame_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
+            try:
+                max_pregame_chase_cents = max(
+                    BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS,
+                    float(g.get("max_price_drift_allowed", 0) or 0) * 100,
+                )
+            except Exception:
+                max_pregame_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
 
-            g["min_pregame_edge_pct"] = min_edge
+            if is_strong_unit_roi_signal(g, wallet_profiles):
+                max_pregame_chase_cents = max(max_pregame_chase_cents, 6.0)
 
-            if edge_pct < min_edge:
+            g["max_pregame_chase_cents"] = round(max_pregame_chase_cents, 2)
+
+
+            if pregame_chase_cents > max_pregame_chase_cents:
                 g["label"] = "PASS"
                 g["score"] = 0
                 g["stake_pct"] = 0
-                g["reason"] = f"Pre-game edge too far gone ({edge_pct}%, min {min_edge}%)"
+                g["reason"] = (
+                    f"Pre-game chase too high "
+                    f"(drift={round(pregame_chase_cents, 2)}c, "
+                    f"max={round(max_pregame_chase_cents, 2)}c)"
+                )
                 scored.append(g)
                 continue
 
@@ -2194,10 +2278,30 @@ def attach_position_data_and_score(
 
         decayed_score = max(base_score - age_penalty, 0)
 
+
+        strong_unit_roi_boost = is_strong_unit_roi_signal(g, wallet_profiles)
+        g["strong_unit_roi_boost"] = strong_unit_roi_boost
+
+        if strong_unit_roi_boost and base_label in {"LEAN", "BET"} and decayed_score >= 58:
+            insider_score_boost = BET_ALERT_STRONG_UNIT_ROI_SCORE_BONUS
+
+            if (
+                float(g.get("size_ratio", 0) or 0) >= 25.0
+                and float(g.get("total_notional", 0) or 0) >= 1000
+            ):
+                insider_score_boost = BET_ALERT_ELITE_UNIT_ROI_SCORE_BONUS
+
+            old_decayed_score = decayed_score
+            decayed_score = min(decayed_score + insider_score_boost, 84)
+            g["strong_unit_roi_score_boost"] = insider_score_boost
+            g["strong_unit_roi_score_before"] = old_decayed_score
+            g["strong_unit_roi_score_after"] = decayed_score
+
+
         if (
             not is_live
             and strong_structure
-            and edge_pct_for_decay >= -2.0
+            and float(g.get("market_movement_cents", 0) or 0) <= BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
         ):
             decayed_score = max(decayed_score, base_score - int(age_penalty * 0.5))
             g["time_decay_adjustment"] = "reduced_for_strong_structure"
@@ -2413,21 +2517,32 @@ def attach_position_data_and_score(
             else:
                 edge_pct = float(edge_pct or 0)
 
-                if current_price >= 0.65:
-                    min_edge = 0.0
-                else:
-                    min_edge = -2.0
+                max_bet_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
 
-                hard_negative_edge_block = -0.5 if current_price < 0.65 else 0.0
+                try:
+                    max_bet_chase_cents = max(
+                        BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS,
+                        float(g.get("max_price_drift_allowed", 0) or 0) * 100,
+                    )
+                except Exception:
+                    max_bet_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
 
-                if edge_pct < hard_negative_edge_block:
+                if bool(g.get("strong_unit_roi_boost", False)):
+                    max_bet_chase_cents = max(max_bet_chase_cents, 6.0)
+
+                g["max_bet_chase_cents"] = round(max_bet_chase_cents, 2)
+
+
+                if market_movement_cents > max_bet_chase_cents:
                     g["label"] = "PASS"
                     g["score"] = 0
                     g["stake_pct"] = 0
                     g["reason"] = (
-                        f"Final filter: blocked negative edge for BET "
-                        f"(edge={round(edge_pct, 2)}%, block={hard_negative_edge_block}%, price={round(current_price, 3)})"
+                        f"Final filter: blocked chase for BET "
+                        f"(drift={round(market_movement_cents, 2)}c, "
+                        f"max={round(max_bet_chase_cents, 2)}c, price={round(current_price, 3)})"
                     )
+
 
                 elif (
                     not is_live
@@ -2440,6 +2555,7 @@ def attach_position_data_and_score(
                         f"Final filter: blocked stale BET "
                         f"(age={age_bucket}, last_buy={int(time_since_last_buy)}s)"
                     )
+
 
                 elif (
                     not is_live
@@ -2455,39 +2571,35 @@ def attach_position_data_and_score(
                         f"(age={age_bucket}, confirmations={confirmation_count})"
                     )
 
+
                 elif (
                     not is_live
                     and age_bucket == "old"
-                    and edge_pct < 0
+                    and market_movement_cents > 0
                     and not consensus_upgrade
+                    and not bool(g.get("strong_unit_roi_boost", False))
                 ):
                     g["label"] = "PASS"
                     g["score"] = 0
                     g["stake_pct"] = 0
                     g["reason"] = (
-                        f"Final filter: blocked old BET with non-positive edge "
-                        f"(age={age_bucket}, edge={round(edge_pct, 2)}%)"
+                        f"Final filter: blocked old BET with chase risk "
+                        f"(age={age_bucket}, drift={round(market_movement_cents, 2)}c)"
                     )
 
-                elif edge_pct < min_edge:
-                    g["label"] = "PASS"
-                    g["score"] = 0
-                    g["stake_pct"] = 0
-                    g["reason"] = (
-                        f"Final filter: edge too low for price "
-                        f"(edge={round(edge_pct, 2)}%, min={min_edge}%, price={round(current_price, 3)})"
-                    )
 
                 elif (
-                    instant_clv_cents is not None
-                    and instant_clv_cents < 0
+                    not is_live
+                    and market_movement_cents >= BET_ALERT_HEAVY_CHASE_REJECT_CENTS
                 ):
-                    g["label"] = "LEAN"
-                    g["stake_pct"] = min(int(g.get("stake_pct", 0) or 0), 80)
+                    g["label"] = "PASS"
+                    g["score"] = 0
+                    g["stake_pct"] = 0
                     g["reason"] = (
-                        f"{g.get('reason', '')} | Downgraded: negative instant CLV "
-                        f"({instant_clv_cents:+.2f}c)"
+                        f"Final filter: heavy chase move for BET "
+                        f"(drift={round(market_movement_cents, 2)}c)"
                     )
+
 
                 elif (
                     instant_clv_cents is not None
@@ -2500,17 +2612,18 @@ def attach_position_data_and_score(
                         f"({instant_clv_cents:+.2f}c, min={max_adverse_instant_clv_cents:+.1f}c)"
                     )
 
+
                 elif (
-                    not is_live
-                    and market_movement_cents <= -10.0
+                    instant_clv_cents is not None
+                    and instant_clv_cents < 0
                 ):
-                    g["label"] = "PASS"
-                    g["score"] = 0
-                    g["stake_pct"] = 0
+                    g["label"] = "LEAN"
+                    g["stake_pct"] = min(int(g.get("stake_pct", 0) or 0), 80)
                     g["reason"] = (
-                        f"Final filter: adverse stale move for BET "
-                        f"(market_movement={round(market_movement_cents, 2)}c)"
+                        f"{g.get('reason', '')} | Downgraded: negative instant CLV "
+                        f"({instant_clv_cents:+.2f}c)"
                     )
+
 
                 elif (
                     not is_live
@@ -2531,20 +2644,19 @@ def attach_position_data_and_score(
                     )
 
         if g.get("label") == "LEAN":
-            lean_edge_pct = float(g.get("edge_pct", 0) or 0)
             lean_size_ratio = float(g.get("size_ratio", 0) or 0)
             lean_conviction = int(g.get("conviction_points", 0) or 0)
             lean_buy_count = int(g.get("buy_count", 0) or 0)
             lean_stake_pct = int(g.get("stake_pct", 0) or 0)
             lean_age_bucket = str(g.get("age_bucket", "") or "").lower()
             lean_time_since_last_buy = int(g.get("seconds_since_last_buy", 999999) or 999999)
-            lean_market_movement_cents = abs(float(g.get("market_movement_cents", 0) or 0))
+            lean_market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
             lean_consensus_upgrade = bool(g.get("consensus_upgrade", False))
 
             g["lean_alert_eligible"] = False
             g["lean_alert_reason"] = None
 
-            # --- dynamic drift threshold ---
+            # --- dynamic chase threshold ---
             if is_live:
                 max_drift = 3.0
             else:
@@ -2552,10 +2664,9 @@ def attach_position_data_and_score(
 
             if (
                 not is_live
-                and lean_edge_pct >= -0.25
+                and lean_market_movement_cents <= max_drift
                 and lean_age_bucket in {"fresh", "slightly stale", "stale", "old"}
                 and lean_time_since_last_buy <= 1200
-                and lean_market_movement_cents <= max_drift
                 and (
                     lean_conviction >= 14
                     or lean_size_ratio >= 2.0
@@ -2568,7 +2679,7 @@ def attach_position_data_and_score(
                 g["lean_alert_eligible"] = True
                 g["lean_alert_reason"] = (
                     f"High-quality LEAN "
-                    f"(edge={round(lean_edge_pct, 2)}%, "
+                    f"(drift={round(lean_market_movement_cents, 2)}c, "
                     f"age={lean_age_bucket}, "
                     f"size_ratio={round(lean_size_ratio, 2)}, "
                     f"conviction={lean_conviction}, "
@@ -2582,9 +2693,12 @@ def attach_position_data_and_score(
                 g["lean_alert_eligible"] = False
                 g["lean_alert_reason"] = "LEAN blocked: too stale"
 
-            if lean_edge_pct < -0.25:
+            if lean_market_movement_cents > max_drift:
                 g["lean_alert_eligible"] = False
-                g["lean_alert_reason"] = "LEAN blocked: negative edge"
+                g["lean_alert_reason"] = (
+                    f"LEAN blocked: chase too high "
+                    f"(drift={round(lean_market_movement_cents, 2)}c, max={max_drift}c)"
+                )
 
         scored.append(g)
 
@@ -3004,7 +3118,7 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
             continue
 
         market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
-        if market_movement_cents < 0.0:
+        if market_movement_cents > BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS:
             consensus_debug["market_movement_negative"] += 1
             upgraded.append(g)
             continue
@@ -5074,15 +5188,24 @@ def passes_new_bet_soft_floors(g, wallet_profiles):
 
     soft_fail_reasons = []
 
+    strong_unit_roi_override = is_strong_unit_roi_signal(g, wallet_profiles)
+    g["strong_unit_roi_soft_floor_override"] = strong_unit_roi_override
+
     if total_notional < BET_ALERT_SOFT_MIN_TOTAL_NOTIONAL:
-        soft_fail_reasons.append("low_notional")
+        if not strong_unit_roi_override:
+            soft_fail_reasons.append("low_notional")
+
 
     if size_ratio < BET_ALERT_SOFT_MIN_SIZE_RATIO:
         soft_fail_reasons.append("low_ratio")
     if leaderboard_roi is None or leaderboard_roi < BET_ALERT_SOFT_MIN_LEADERBOARD_ROI:
         soft_fail_reasons.append("low_roi")
 
+
     justification_reasons = []
+
+    if strong_unit_roi_override:
+        justification_reasons.append("strong_unit_ratio_roi")
 
     if score >= BET_ALERT_SOFT_STRONG_SCORE:
         justification_reasons.append("strong_score")
@@ -7297,7 +7420,7 @@ def send_pushover_bet_alert(g):
             f"Source: {INSTANCE_LABEL}\n"
             f"{phase_label} | {market_text}\n"
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
-            f"Score: {score_display} | Edge: {round(float(g.get('edge_pct', 0) or 0), 2)}%\n"
+            f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
             f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
             f"Followers: {followers_display}\n"
@@ -7593,23 +7716,25 @@ if __name__ == "__main__":
             )
             wallet_profiles = result["wallet_profiles"]
 
-            if not RUNTIME_SUMMARY_ONLY:
+            if "alert_decision_counts" in locals():
+                print("BET ALERT DECISION SUMMARY")
                 print("=" * 80)
-                print("ACTIVITY PIPELINE SUMMARY")
-                print(f"All trades loaded:        {len(result['all_trades'])}")
-                print(f"Recent trades kept:       {len(result['recent_trades'])}")
-                print(f"Valid BUY trades:         {len(result['valid_buy_trades'])}")
-                print(f"Accumulation groups:      {len(result['accumulation_groups'])}")
-                print(f"Scored candidates:        {len(result['scored_candidates'])}")
-                print(f"Filtered (buy_count):     {result['filtered_counts']['buy_count']}")
-                print(f"Filtered (paired):        {result['filtered_counts']['paired_recent']}")
-                print(f"Filtered (price range):   {result['filtered_counts']['price_range']}")
-                print(f"Active wallets retained:  {result['active_wallet_count']}")
-                print(f"Failure trackers active:  {len(result['active_wallet_failure_counts'])}")
-                print(f"Lookback hours:           {HOURS_LOOKBACK}")
-                print(f"Current timestamp:        {result['now_ts']}")
-                print(f"Cutoff timestamp:         {result['cutoff_ts']}")
-                print("=" * 80)
+                print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
+                print(f"Cycle deduped away: {alert_decision_counts['cycle_deduped_away']}")
+                print(f"Model-history candidates: {alert_decision_counts['model_history_candidates']}")
+                print(f"Model-history recorded: {alert_decision_counts['model_history_recorded']}")
+                print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
+                print(f"Sent new bets - confirmed follow path: {alert_decision_counts.get('send_new_bet_confirmed_follow', 0)}")
+                print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
+                print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
+                print(f"Skipped not BET: {alert_decision_counts.get('skip_not_bet', 0)}")
+                print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
+                print(f"Skipped quality filter: {alert_decision_counts['skip_quality_filter']}")
+                print(f"Skipped new bets - weak: {alert_decision_counts.get('skip_new_bet_weak', 0)}")
+                print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
+                print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
+                print(f"Skipped duplicate - price worse: {alert_decision_counts['skip_duplicate_price_worse']}")
+                print("-" * 80)
             if run_deep_debug:
                 print("WALLET PROFILE SUMMARY")
                 top_wallets = sorted(
@@ -7704,9 +7829,13 @@ if __name__ == "__main__":
                         f"{insider_market} | "
                         f"{insider_g.get('outcome')} | "
                         f"label={insider_g.get('label')} | "
+                        f"score={insider_g.get('score')} | "
+                        f"stake={insider_g.get('stake_pct')} | "
                         f"notional=${float(insider_g.get('total_notional', 0) or 0):,.0f} | "
                         f"ratio={float(insider_g.get('size_ratio', 0) or 0):.2f}x | "
-                        f"drift={insider_g.get('insider_price_drift_cents', 'N/A')}c"
+                        f"drift={insider_g.get('insider_price_drift_cents', 'N/A')}c | "
+                        f"strong_unit_roi={insider_g.get('strong_unit_roi_boost')} | "
+                        f"reason={insider_g.get('reason')}"
                     )
                 except Exception as e:
                     print(f"[INSIDER WATCH PRINT ERROR] {repr(e)}")
@@ -7790,6 +7919,26 @@ if __name__ == "__main__":
                     wallet_profiles,
                 )
                 alert_decision_counts[decision] += 1
+
+                if (
+                    str(alert_g.get("label", "") or "").upper() == "BET"
+                    and not str(decision).startswith("send_")
+                ):
+                    print(
+                        "[BET SUPPRESSED] "
+                        f"decision={decision} "
+                        f"market={alert_g.get('market') or alert_g.get('title') or alert_g.get('slug')} "
+                        f"outcome={alert_g.get('outcome')} "
+                        f"score={alert_g.get('score')} "
+                        f"stake={alert_g.get('stake_pct')} "
+                        f"phase={alert_g.get('market_phase')} "
+                        f"drift={alert_g.get('market_movement_cents')} "
+                        f"quality_filter={alert_g.get('quality_filter_reason')} "
+                        f"opposite_conflict={alert_g.get('opposite_conflict')} "
+                        f"possible_flip={alert_g.get('possible_flip')} "
+                        f"duplicate_reason={alert_g.get('duplicate_reason')}"
+                    )
+
 
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"], wallet_profiles):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
@@ -8120,7 +8269,6 @@ if __name__ == "__main__":
                 print(f"Multi-wallet strong (ratio + notional): {early_watch_diagnostics.get('multi_wallet_strong', 0)}")
                 print("-" * 80)
 
-            if not RUNTIME_SUMMARY_ONLY:
                 print("BET ALERT DECISION SUMMARY")
                 print("=" * 80)
                 print(f"Raw BET candidates: {alert_decision_counts['raw_bet_candidates']}")
@@ -8128,17 +8276,15 @@ if __name__ == "__main__":
                 print(f"Model-history candidates: {alert_decision_counts['model_history_candidates']}")
                 print(f"Model-history recorded: {alert_decision_counts['model_history_recorded']}")
                 print(f"Sent new bets: {alert_decision_counts['send_new_bet']}")
-                print(f"Sent new bets - confirmed follow path: {alert_decision_counts['send_new_bet_confirmed_follow']}")
                 print(f"Sent actionable duplicates: {alert_decision_counts['send_actionable_duplicate']}")
                 print(f"Sent possible flips: {alert_decision_counts['send_possible_flip']}")
+                print(f"Skipped not BET: {alert_decision_counts['skip_not_bet']}")
                 print(f"Skipped opposite conflicts: {alert_decision_counts['skip_opposite_conflict']}")
                 print(f"Skipped quality filter: {alert_decision_counts['skip_quality_filter']}")
-                print(f"Skipped new bets - weak: {alert_decision_counts['skip_new_bet_weak']}")
                 print(f"Skipped duplicate - not actionable: {alert_decision_counts['skip_duplicate_not_actionable']}")
                 print(f"Skipped duplicate - cooldown: {alert_decision_counts['skip_duplicate_cooldown']}")
                 print(f"Skipped duplicate - price worse: {alert_decision_counts['skip_duplicate_price_worse']}")
                 print("-" * 80)
-
                 print("BET AGE SUMMARY - POST-DEDUP BET CANDIDATES")
                 print("=" * 80)
                 print(f"Count: {len(bet_candidates)}")
