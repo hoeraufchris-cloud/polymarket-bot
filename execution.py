@@ -15,10 +15,13 @@ DEFAULT_ORDER_TYPE = os.getenv("POLYMARKET_ORDER_TYPE", "ORDER_TYPE_LIMIT")
 DEFAULT_TIME_IN_FORCE = os.getenv("POLYMARKET_TIME_IN_FORCE", "TIME_IN_FORCE_IMMEDIATE_OR_CANCEL")
 
 LIVE_ORDER_CREATE_CONFIRMATION = os.getenv("LIVE_ORDER_CREATE_CONFIRMATION", "") == "I_UNDERSTAND_THIS_PLACES_REAL_BETS"
-LIVE_ORDER_MIN_EDGE_PERCENT = Decimal(os.getenv("LIVE_ORDER_MIN_EDGE_PERCENT", "3"))
 LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS = int(os.getenv("LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS", "120"))
 LIVE_ORDER_MIN_PRICE = Decimal(os.getenv("LIVE_ORDER_MIN_PRICE", "0.05"))
 LIVE_ORDER_MAX_PRICE = Decimal(os.getenv("LIVE_ORDER_MAX_PRICE", "0.95"))
+LIVE_ORDER_MAX_USD = Decimal(os.getenv("LIVE_ORDER_MAX_USD", "2"))
+
+LIVE_ORDER_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_MAX_CHASE_DRIFT_CENTS", "2.5"))
+LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS", "5"))
 
 EXECUTION_LEDGER_PATH = os.getenv(
     "EXECUTION_LEDGER_PATH",
@@ -277,7 +280,6 @@ def is_live_order_whitelisted_market(market_slug):
 
     return True, "passed_live_order_market_whitelist"
 
-
 def make_execution_key(market_slug, outcome, price):
     resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
     normalized_price = normalize_price(price)
@@ -314,8 +316,20 @@ def save_execution_ledger(rows):
 
 def get_recent_execution_record(market_slug, outcome, price):
     execution_key = make_execution_key(market_slug, outcome, price)
-    resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
     now_ts = time.time()
+
+    blocking_statuses = {
+        "PREVIEW_OK",
+        "LIVE_ORDER_PLACED",
+        "LIVE_ORDER_BLOCKED_SAFETY_CHECK",
+        "LIVE_ORDER_BLOCKED_CONFIRMATION_MISSING",
+        "LIVE_ORDER_BLOCKED_REAL_MONEY_DISABLED",
+    }
+
+    non_blocking_statuses = {
+        "PREVIEW_FAILED",
+        "PREVIEW_SKIPPED",
+    }
 
     for row in reversed(load_execution_ledger()):
         try:
@@ -326,18 +340,17 @@ def get_recent_execution_record(market_slug, outcome, price):
         if now_ts - row_ts > EXECUTION_DEDUPE_TTL_SECONDS:
             continue
 
-        if row.get("execution_key") == execution_key:
-            return row
-
-        row_resolved_slug = str(row.get("resolved_market_slug") or "").strip()
-        row_error = str(row.get("error") or "").lower()
         row_status = str(row.get("status") or "").upper()
+        row_mode = str(row.get("mode") or "").upper()
+        row_effective_status = row_status if row_status else row_mode
 
-        if (
-            row_resolved_slug == resolved_market_slug
-            and row_status == "PREVIEW_FAILED"
-            and "market not found" in row_error
-        ):
+        if row_effective_status in non_blocking_statuses:
+            continue
+
+        if row_effective_status and row_effective_status not in blocking_statuses:
+            continue
+
+        if row.get("execution_key") == execution_key:
             return row
 
     return None
@@ -476,21 +489,36 @@ def validate_live_order_safety(price, signal_context=None):
         except Exception:
             return False, f"invalid_signal_age:{signal_age_seconds}"
 
-    edge_percent = signal_context.get("edge_percent")
+    wallet_entry_price = (
+        signal_context.get("wallet_entry_price")
+        if signal_context.get("wallet_entry_price") is not None
+        else signal_context.get("avg_trade_price")
+    )
 
-    if edge_percent is None:
-        return False, "missing_edge_percent"
+    if wallet_entry_price is None:
+        return False, "missing_wallet_entry_price"
 
     try:
-        edge_decimal = Decimal(str(edge_percent))
-
-        if edge_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
-            return False, f"edge_below_min:{edge_decimal}%"
-
+        wallet_entry_decimal = Decimal(str(wallet_entry_price))
     except Exception:
-        return False, f"invalid_edge:{edge_percent}"
+        return False, f"invalid_wallet_entry_price:{wallet_entry_price}"
 
-    return True, "passed_live_order_safety"
+    if wallet_entry_decimal <= 0 or wallet_entry_decimal >= 1:
+        return False, f"invalid_wallet_entry_price:{wallet_entry_decimal}"
+
+    chase_drift_decimal = price_decimal - wallet_entry_decimal
+    chase_drift_cents = chase_drift_decimal * Decimal("100")
+
+    hard_max_drift_decimal = LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS / Decimal("100")
+    max_drift_decimal = LIVE_ORDER_MAX_CHASE_DRIFT_CENTS / Decimal("100")
+
+    if chase_drift_decimal >= hard_max_drift_decimal:
+        return False, f"hard_chase_drift_too_high:{chase_drift_cents:.2f}c"
+
+    if chase_drift_decimal > max_drift_decimal:
+        return False, f"chase_drift_too_high:{chase_drift_cents:.2f}c"
+
+    return True, f"passed_live_order_safety:drift={chase_drift_cents:.2f}c"
 
 
 def execute_order_safely(
@@ -502,11 +530,22 @@ def execute_order_safely(
 ):
     client = get_polymarket_client()
 
+    effective_max_order_usd = max_order_usd
+
+    if ENABLE_REAL_MONEY_ORDERS:
+        if effective_max_order_usd is None:
+            effective_max_order_usd = LIVE_ORDER_MAX_USD
+        else:
+            effective_max_order_usd = min(
+                Decimal(str(effective_max_order_usd)),
+                LIVE_ORDER_MAX_USD,
+            )
+
     payload = build_order_payload(
         market_slug=market_slug,
         outcome=outcome,
         price=price,
-        max_order_usd=max_order_usd,
+        max_order_usd=effective_max_order_usd,
     )
 
     request_payload = {
@@ -531,6 +570,7 @@ def execute_order_safely(
             "mode": "PREVIEW_ONLY_REAL_ORDER_DISABLED",
             "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
             "live_safe": live_safe,
             "live_safety_reason": live_safety_reason,
             "live_order_market_whitelisted": live_whitelisted,
@@ -545,6 +585,7 @@ def execute_order_safely(
             "mode": "LIVE_ORDER_BLOCKED_CONFIRMATION_MISSING",
             "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
             "live_safe": live_safe,
             "live_safety_reason": "missing_live_order_create_confirmation",
             "live_order_market_whitelisted": live_whitelisted,
@@ -559,6 +600,7 @@ def execute_order_safely(
             "mode": "LIVE_ORDER_BLOCKED_SAFETY_CHECK",
             "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
             "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
             "live_safe": live_safe,
             "live_safety_reason": live_safety_reason,
             "live_order_market_whitelisted": live_whitelisted,
@@ -574,6 +616,7 @@ def execute_order_safely(
         "mode": "LIVE_ORDER_PLACED",
         "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
         "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+        "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
         "live_safe": live_safe,
         "live_safety_reason": live_safety_reason,
         "live_order_market_whitelisted": live_whitelisted,

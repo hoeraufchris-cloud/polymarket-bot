@@ -8053,6 +8053,14 @@ if __name__ == "__main__":
                                     else alert_g.get("since_last_buy")
                                 )
 
+                                wallet_entry_price_for_execution = (
+                                    alert_g.get("wallet_entry_price")
+                                    if alert_g.get("wallet_entry_price") is not None
+                                    else alert_g.get("avg_trade_price")
+                                    if alert_g.get("avg_trade_price") is not None
+                                    else alert_g.get("fair_price")
+                                )
+
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
@@ -8066,6 +8074,13 @@ if __name__ == "__main__":
                                             alert_g.get("stake_percent")
                                             if alert_g.get("stake_percent") is not None
                                             else alert_g.get("stake_pct")
+                                        ),
+                                        "wallet_entry_price": wallet_entry_price_for_execution,
+                                        "avg_trade_price": alert_g.get("avg_trade_price"),
+                                        "current_price": (
+                                            alert_g.get("current_price")
+                                            if alert_g.get("current_price") is not None
+                                            else execution_price
                                         ),
                                     },
                                 )
