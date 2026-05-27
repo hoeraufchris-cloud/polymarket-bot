@@ -8390,6 +8390,31 @@ if __name__ == "__main__":
             new_bet_alerts = []
             for g in alert_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
+
+
+                try:
+                    final_market_phase = str(alert_g.get("market_phase", "") or "").strip()
+                    final_market_movement_cents = float(alert_g.get("market_movement_cents", 0) or 0)
+                except Exception:
+                    final_market_phase = ""
+                    final_market_movement_cents = 0.0
+
+
+                if (
+                    final_market_phase == "Live"
+                    and final_market_movement_cents < BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS
+                ):
+                    alert_g["label"] = "PASS"
+                    alert_g["score"] = 0
+                    alert_g["stake_pct"] = 0
+                    alert_g["quality_filter_reason"] = (
+                        f"Live favorable drift too large "
+                        f"({round(final_market_movement_cents, 2):+}c, "
+                        f"max {round(BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS, 2):+}c)"
+                    )
+                    alert_g["reason"] = alert_g["quality_filter_reason"]
+
+
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
                 decision = classify_bet_alert_decision(
                     alert_g,
@@ -8575,12 +8600,15 @@ if __name__ == "__main__":
                                 alert_g["execution_preview_outcome_side"] = preview_order_data.get("outcomeSide")
                                 alert_g["execution_preview_quantity"] = preview_order_data.get("quantity")
 
+                                execution_mode = str(execution_preview.get("mode") or "UNKNOWN")
+                                execution_status = execution_mode
+
                                 record_execution_attempt(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
                                     price=execution_price,
-                                    mode=execution_preview.get("mode"),
-                                    status="PREVIEW_OK",
+                                    mode=execution_mode,
+                                    status=execution_status,
                                     live_safe=execution_preview.get("live_safe"),
                                     live_safety_reason=execution_preview.get("live_safety_reason"),
                                     payload=execution_preview.get("payload"),
@@ -8588,16 +8616,39 @@ if __name__ == "__main__":
                                     order=execution_preview.get("order"),
                                 )
 
-                                print(
-                                    "[ORDER PREVIEW OK] "
-                                    f"market={execution_slug} "
-                                    f"outcome={execution_outcome} "
-                                    f"price={execution_price} "
-                                    f"quantity={alert_g.get('execution_preview_quantity')} "
-                                    f"mode={alert_g.get('execution_preview_mode')} "
-                                    f"live_safe={alert_g.get('execution_live_safe')} "
-                                    f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
-                                )
+                                if execution_mode == "LIVE_ORDER_PLACED":
+                                    print(
+                                        "[LIVE ORDER PLACED] "
+                                        f"market={execution_slug} "
+                                        f"outcome={execution_outcome} "
+                                        f"price={execution_price} "
+                                        f"quantity={alert_g.get('execution_preview_quantity')} "
+                                        f"max_usd={execution_preview.get('live_order_max_usd')} "
+                                        f"live_safe={alert_g.get('execution_live_safe')} "
+                                        f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
+                                    )
+                                elif execution_mode.startswith("LIVE_ORDER_BLOCKED"):
+                                    print(
+                                        "[LIVE ORDER BLOCKED] "
+                                        f"market={execution_slug} "
+                                        f"outcome={execution_outcome} "
+                                        f"price={execution_price} "
+                                        f"quantity={alert_g.get('execution_preview_quantity')} "
+                                        f"mode={alert_g.get('execution_preview_mode')} "
+                                        f"live_safe={alert_g.get('execution_live_safe')} "
+                                        f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
+                                    )
+                                else:
+                                    print(
+                                        "[ORDER PREVIEW OK] "
+                                        f"market={execution_slug} "
+                                        f"outcome={execution_outcome} "
+                                        f"price={execution_price} "
+                                        f"quantity={alert_g.get('execution_preview_quantity')} "
+                                        f"mode={alert_g.get('execution_preview_mode')} "
+                                        f"live_safe={alert_g.get('execution_live_safe')} "
+                                        f"live_safety_reason={alert_g.get('execution_live_safety_reason')}"
+                                    )
 
                             except Exception as e:
                                 alert_g["execution_preview_status"] = "PREVIEW_FAILED"
