@@ -107,6 +107,7 @@ import re
 import math
 import ssl
 import certifi
+from datetime import datetime, timezone
 
 
 try:
@@ -220,6 +221,7 @@ SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
 TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
 INSIDER_DIAGNOSTICS_CSV_PATH = f"{DATA_DIR}/insider_diagnostics.csv"
+WALLET_HISTORY_STATS_PATH = f"{DATA_DIR}/wallet_history_stats.json"
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -255,16 +257,56 @@ INSIDER_DIAGNOSTIC_STRONG_LEADERBOARD_ROI = 0.05
 INSIDER_DIAGNOSTIC_MIN_WALLET_RESOLVED = 3
 INSIDER_DIAGNOSTIC_STRONG_WIN_RATE = 55.0
 
-BET_ALERT_STRONG_UNIT_ROI_MIN_NOTIONAL = 500
-BET_ALERT_STRONG_UNIT_ROI_MIN_SIZE_RATIO = 10.0
-BET_ALERT_STRONG_UNIT_ROI_MIN_LEADERBOARD_ROI = 0.05
-BET_ALERT_STRONG_UNIT_ROI_MAX_CHASE_CENTS = 2.0
+WALLET_HISTORY_STATS_ENABLED = True
+WALLET_HISTORY_STATS_LOOKBACK_HOURS = 24 * 60
+WALLET_HISTORY_STATS_CACHE_TTL_SECONDS = 6 * 60 * 60
+WALLET_HISTORY_STATS_PAGE_LIMIT = 500
+WALLET_HISTORY_STATS_MAX_PAGES_PER_WALLET = 7
+WALLET_HISTORY_STATS_TIMEOUT_SECONDS = 10
+
+BET_ALERT_PROVEN_WALLET_TIERS = [
+    {
+        "name": "elite_roi_100_trades",
+        "min_roi": 0.06,
+        "min_historical_trades": 100,
+        "min_size_ratio": 3.0,
+        "live_min_notional": 100,
+        "pregame_min_notional": 50,
+    },
+    {
+        "name": "strong_roi_250_trades",
+        "min_roi": 0.04,
+        "min_historical_trades": 250,
+        "min_size_ratio": 3.0,
+        "live_min_notional": 150,
+        "pregame_min_notional": 75,
+    },
+    {
+        "name": "proven_roi_750_trades",
+        "min_roi": 0.025,
+        "min_historical_trades": 750,
+        "min_size_ratio": 4.0,
+        "live_min_notional": 250,
+        "pregame_min_notional": 125,
+    },
+    {
+        "name": "grinder_roi_1500_trades",
+        "min_roi": 0.015,
+        "min_historical_trades": 1500,
+        "min_size_ratio": 5.0,
+        "live_min_notional": 300,
+        "pregame_min_notional": 150,
+    },
+]
+
+BET_ALERT_PROVEN_WALLET_MAX_CHASE_CENTS = 2.0
 BET_ALERT_STRONG_UNIT_ROI_SCORE_BONUS = 5
 BET_ALERT_ELITE_UNIT_ROI_SCORE_BONUS = 8
 
 BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS = 4.0
 BET_ALERT_MAX_LIVE_CHASE_CENTS = 2.0
 BET_ALERT_HEAVY_CHASE_REJECT_CENTS = 6.0
+BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS = -8.0
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
@@ -404,25 +446,33 @@ def is_strong_unit_roi_signal(g, wallet_profiles):
     if not isinstance(g, dict):
         return False
 
+
     try:
         total_notional = float(g.get("total_notional", 0) or 0)
     except Exception:
         total_notional = 0.0
+
 
     try:
         size_ratio = float(g.get("size_ratio", 0) or 0)
     except Exception:
         size_ratio = 0.0
 
+
     try:
         market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
     except Exception:
         market_movement_cents = 0.0
 
+
+    market_phase = str(g.get("market_phase", "") or "").strip()
+
+
     wallet = str(g.get("wallet", "") or "").strip().lower()
     wallet_profile = {}
     if isinstance(wallet_profiles, dict):
         wallet_profile = wallet_profiles.get(wallet, {}) or {}
+
 
     leaderboard_roi = wallet_profile.get("leaderboard_roi")
     try:
@@ -430,20 +480,87 @@ def is_strong_unit_roi_signal(g, wallet_profiles):
     except Exception:
         leaderboard_roi = None
 
-    if total_notional < BET_ALERT_STRONG_UNIT_ROI_MIN_NOTIONAL:
+
+    if leaderboard_roi is None:
         return False
 
-    if size_ratio < BET_ALERT_STRONG_UNIT_ROI_MIN_SIZE_RATIO:
+
+    if market_movement_cents > BET_ALERT_PROVEN_WALLET_MAX_CHASE_CENTS:
         return False
 
-    if leaderboard_roi is None or leaderboard_roi < BET_ALERT_STRONG_UNIT_ROI_MIN_LEADERBOARD_ROI:
+
+    wallet_history_stats = get_wallet_history_stats(wallet)
+
+
+    try:
+        historical_trade_count = int(float(wallet_history_stats.get("trade_count", 0) or 0))
+    except Exception:
+        historical_trade_count = 0
+
+
+    if historical_trade_count <= 0:
         return False
 
-    if market_movement_cents > BET_ALERT_STRONG_UNIT_ROI_MAX_CHASE_CENTS:
-        return False
 
-    return True
+    for tier in BET_ALERT_PROVEN_WALLET_TIERS:
+        min_roi = float(tier.get("min_roi", 0) or 0)
+        min_historical_trades = int(tier.get("min_historical_trades", 0) or 0)
+        min_size_ratio = float(tier.get("min_size_ratio", 0) or 0)
 
+
+        if market_phase == "Live":
+            min_notional = float(tier.get("live_min_notional", 0) or 0)
+        else:
+            min_notional = float(tier.get("pregame_min_notional", 0) or 0)
+
+
+        if leaderboard_roi < min_roi:
+            continue
+
+
+        if historical_trade_count < min_historical_trades:
+            continue
+
+
+        if size_ratio < min_size_ratio:
+            continue
+
+
+        if total_notional < min_notional:
+            continue
+
+
+        g["proven_wallet_low_stake_allowed"] = True
+        g["proven_wallet_tier"] = tier.get("name")
+        g["proven_wallet_roi"] = leaderboard_roi
+        g["proven_wallet_historical_trade_count"] = historical_trade_count
+        g["proven_wallet_min_notional"] = min_notional
+        g["proven_wallet_min_size_ratio"] = min_size_ratio
+        g["proven_wallet_avg_trade_notional"] = wallet_history_stats.get("avg_trade_notional")
+        g["proven_wallet_median_trade_notional"] = wallet_history_stats.get("median_trade_notional")
+
+
+        if g.get("label") == "BET" and not g.get("_printed_proven_wallet_low_stake_pass"):
+            g["_printed_proven_wallet_low_stake_pass"] = True
+            print(
+                "[PROVEN WALLET LOW-STAKE PASS] "
+                f"wallet={wallet} "
+                f"tier={g.get('proven_wallet_tier')} "
+                f"roi={round(leaderboard_roi * 100, 2)}% "
+                f"trades={historical_trade_count} "
+                f"notional=${round(total_notional, 2)} "
+                f"ratio={round(size_ratio, 2)}x "
+                f"drift={round(market_movement_cents, 2)}c"
+            )
+
+
+        return True
+
+
+    return False
+
+
+    return False
 COMBINED_CA_BUNDLE_PATH = None
 
 def extract_pem_blocks(text):
@@ -714,6 +831,354 @@ def build_leaderboard_roi_map(leaderboard_rows):
 
     return roi_map
 
+WALLET_HISTORY_STATS_CACHE = None
+
+
+def load_wallet_history_stats_cache():
+    try:
+        with open(WALLET_HISTORY_STATS_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+
+    if not isinstance(data, dict):
+        data = {}
+
+
+    wallets = data.get("wallets")
+    if not isinstance(wallets, dict):
+        data["wallets"] = {}
+
+
+    return data
+
+
+def save_wallet_history_stats_cache(cache):
+    try:
+        with open(WALLET_HISTORY_STATS_PATH, "w") as f:
+            json.dump(cache, f, indent=2)
+    except Exception as e:
+        print(f"[Wallet history stats save error] {repr(e)}")
+
+
+def parse_activity_timestamp_to_ts(value):
+    if value is None:
+        return None
+
+
+    if isinstance(value, (int, float)):
+        ts = float(value)
+        if ts > 10_000_000_000:
+            ts = ts / 1000.0
+        return ts
+
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+
+    try:
+        ts = float(text)
+        if ts > 10_000_000_000:
+            ts = ts / 1000.0
+        return ts
+    except Exception:
+        pass
+
+
+    try:
+        normalized = text.replace("Z", "+00:00")
+        return datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        return None
+
+
+def is_trade_activity_row(row):
+    if not isinstance(row, dict):
+        return False
+
+
+    activity_type = str(row.get("type", "") or row.get("activityType", "") or "").strip().upper()
+    if activity_type in {"TRADE", "BUY", "SELL"}:
+        return True
+
+
+    if row.get("price") is not None and row.get("size") is not None:
+        return True
+
+
+    if row.get("usdcSize") is not None:
+        return True
+
+
+    return False
+
+
+def get_activity_trade_key(row):
+    if not isinstance(row, dict):
+        return None
+
+
+    key_parts = [
+        row.get("transactionHash"),
+        row.get("transaction_hash"),
+        row.get("txHash"),
+        row.get("hash"),
+        row.get("timestamp"),
+        row.get("slug"),
+        row.get("marketSlug"),
+        row.get("conditionId"),
+        row.get("asset"),
+        row.get("outcome"),
+        row.get("side"),
+        row.get("price"),
+        row.get("size"),
+        row.get("usdcSize"),
+    ]
+
+
+    key = "||".join(str(part) for part in key_parts if part is not None)
+    if not key:
+        return None
+
+
+    return key
+
+
+def get_activity_trade_notional(row):
+    if not isinstance(row, dict):
+        return 0.0
+
+
+    for field in ["usdcSize", "notional", "value", "amount"]:
+        value = row.get(field)
+        if value is None:
+            continue
+
+
+        try:
+            parsed = abs(float(value))
+            if parsed > 0:
+                return parsed
+        except Exception:
+            continue
+
+
+    try:
+        size = abs(float(row.get("size", 0) or 0))
+    except Exception:
+        size = 0.0
+
+
+    try:
+        price = abs(float(row.get("price", 0) or 0))
+    except Exception:
+        price = 0.0
+
+
+    if size > 0 and price > 0:
+        return size * price
+
+
+    return 0.0
+
+
+def fetch_wallet_history_stats(wallet):
+    wallet = str(wallet or "").strip().lower()
+    if not wallet.startswith("0x") or len(wallet) != 42:
+        return {}
+
+
+    cutoff_ts = time.time() - (WALLET_HISTORY_STATS_LOOKBACK_HOURS * 60 * 60)
+    trade_keys = set()
+    notionals = []
+    rows_seen = 0
+
+
+    for page_index in range(WALLET_HISTORY_STATS_MAX_PAGES_PER_WALLET):
+        offset = page_index * WALLET_HISTORY_STATS_PAGE_LIMIT
+
+
+        params = {
+            "user": wallet,
+            "limit": WALLET_HISTORY_STATS_PAGE_LIMIT,
+            "offset": offset,
+            "sortBy": "TIMESTAMP",
+            "sortDirection": "DESC",
+        }
+
+
+        try:
+            response = requests.get(
+                "https://data-api.polymarket.com/activity",
+                params=params,
+                timeout=WALLET_HISTORY_STATS_TIMEOUT_SECONDS,
+            )
+
+
+            if response.status_code == 400 and rows_seen > 0:
+                break
+
+
+            response.raise_for_status()
+            payload = response.json()
+        except Exception as e:
+            print(f"[Wallet history stats fetch error] wallet={wallet} offset={offset} error={repr(e)}")
+            break
+
+
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            rows = payload.get("data") or payload.get("activity") or payload.get("results") or []
+        else:
+            rows = []
+
+
+        if not rows:
+            break
+
+
+        rows_seen += len(rows)
+        page_had_recent_row = False
+
+
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+
+
+            row_ts = parse_activity_timestamp_to_ts(
+                row.get("timestamp")
+                or row.get("createdAt")
+                or row.get("created_at")
+                or row.get("time")
+            )
+
+
+            if row_ts is not None and row_ts >= cutoff_ts:
+                page_had_recent_row = True
+
+
+            if row_ts is not None and row_ts < cutoff_ts:
+                continue
+
+
+            if not is_trade_activity_row(row):
+                continue
+
+
+            trade_key = get_activity_trade_key(row)
+            if not trade_key:
+                continue
+
+
+            if trade_key in trade_keys:
+                continue
+
+
+            trade_keys.add(trade_key)
+
+
+            notional = get_activity_trade_notional(row)
+            if notional > 0:
+                notionals.append(notional)
+
+
+        if len(rows) < WALLET_HISTORY_STATS_PAGE_LIMIT:
+            break
+
+
+        if not page_had_recent_row:
+            break
+
+
+    trade_count = len(trade_keys)
+    total_notional = sum(notionals)
+
+
+    avg_trade_notional = 0.0
+    if notionals:
+        avg_trade_notional = total_notional / len(notionals)
+
+
+    median_trade_notional = 0.0
+    if notionals:
+        sorted_notionals = sorted(notionals)
+        middle = len(sorted_notionals) // 2
+        if len(sorted_notionals) % 2 == 1:
+            median_trade_notional = sorted_notionals[middle]
+        else:
+            median_trade_notional = (sorted_notionals[middle - 1] + sorted_notionals[middle]) / 2.0
+
+
+    return {
+        "wallet": wallet,
+        "updated_ts": int(time.time()),
+        "lookback_hours": WALLET_HISTORY_STATS_LOOKBACK_HOURS,
+        "rows_seen": rows_seen,
+        "trade_count": trade_count,
+        "total_trade_notional": round(total_notional, 2),
+        "avg_trade_notional": round(avg_trade_notional, 2),
+        "median_trade_notional": round(median_trade_notional, 2),
+    }
+
+
+def get_wallet_history_stats(wallet):
+    global WALLET_HISTORY_STATS_CACHE
+
+
+    wallet = str(wallet or "").strip().lower()
+    if not wallet.startswith("0x") or len(wallet) != 42:
+        return {}
+
+
+    if not WALLET_HISTORY_STATS_ENABLED:
+        return {}
+
+
+    if WALLET_HISTORY_STATS_CACHE is None:
+        WALLET_HISTORY_STATS_CACHE = load_wallet_history_stats_cache()
+
+
+    wallets = WALLET_HISTORY_STATS_CACHE.get("wallets")
+    if not isinstance(wallets, dict):
+        wallets = {}
+        WALLET_HISTORY_STATS_CACHE["wallets"] = wallets
+
+
+    cached = wallets.get(wallet)
+    now_ts = time.time()
+
+
+    if isinstance(cached, dict):
+        updated_ts = float(cached.get("updated_ts", 0) or 0)
+        if now_ts - updated_ts <= WALLET_HISTORY_STATS_CACHE_TTL_SECONDS:
+            return cached
+
+
+    fresh = fetch_wallet_history_stats(wallet)
+    if fresh:
+        wallets[wallet] = fresh
+        save_wallet_history_stats_cache(WALLET_HISTORY_STATS_CACHE)
+        print(
+            "[WALLET HISTORY STATS] "
+            f"wallet={wallet} "
+            f"trades={fresh.get('trade_count')} "
+            f"avg=${fresh.get('avg_trade_notional')} "
+            f"median=${fresh.get('median_trade_notional')} "
+            f"rows_seen={fresh.get('rows_seen')}"
+        )
+        return fresh
+
+
+    if isinstance(cached, dict):
+        return cached
+
+
+    return {}
 
 def enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows):
     roi_map = build_leaderboard_roi_map(leaderboard_rows)
@@ -2084,6 +2549,7 @@ def attach_position_data_and_score(
         if is_live:
             live_chase_cents = float(g.get("market_movement_cents", 0) or 0)
 
+
             dynamic_live_chase_cents = BET_ALERT_MAX_LIVE_CHASE_CENTS
             try:
                 dynamic_live_chase_cents = max(
@@ -2093,7 +2559,20 @@ def attach_position_data_and_score(
             except Exception:
                 dynamic_live_chase_cents = BET_ALERT_MAX_LIVE_CHASE_CENTS
 
+
             g["max_live_chase_cents"] = round(dynamic_live_chase_cents, 2)
+
+
+            if live_chase_cents < BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS:
+                g["label"] = "PASS"
+                g["score"] = 0
+                g["stake_pct"] = 0
+                g["reason"] = (
+                    f"Live favorable drift too large "
+                    f"({round(live_chase_cents, 2):+}c, "
+                    f"max {round(BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS, 2):+}c)"
+                )
+
 
             if live_chase_cents > dynamic_live_chase_cents:
                 g["label"] = "PASS"
