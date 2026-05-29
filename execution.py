@@ -143,6 +143,7 @@ def convert_feed_slug_to_us_slug(market_slug):
         return slug_aliases[slug]
 
     converted = slug.replace("nba-sas-", "nba-sa-")
+    converted = converted.replace("-sas-", "-sa-")
     converted = converted.replace("mlb-oak-", "mlb-ath-")
     converted = converted.replace("-oak-", "-ath-")
 
@@ -224,7 +225,6 @@ def is_supported_execution_market(market_slug):
         return False, "unsupported_league_or_prefix"
 
     unsupported_markers = [
-        "-spread-",
         "-player-",
         "-props-",
         "-btts",
