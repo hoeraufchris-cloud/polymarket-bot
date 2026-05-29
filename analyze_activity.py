@@ -8362,6 +8362,9 @@ if __name__ == "__main__":
                 )
                 model_history_recorded_count += 1
 
+            if model_history_recorded_count > 0:
+                save_signal_metrics_history(signal_metrics_history)
+
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
             alert_decision_counts["cycle_deduped_away"] = (

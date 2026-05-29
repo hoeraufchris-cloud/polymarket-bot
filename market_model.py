@@ -47,7 +47,7 @@ SIGNAL_METRICS_HISTORY_PATH = os.path.join(DATA_DIR, "signal_metrics_history.jso
 MARKET_MODEL_OUTPUT_PATH = os.path.join(DATA_DIR, "market_model_output.json")
 
 MODEL_MIN_MINUTES_TO_START = 0
-MODEL_MAX_MINUTES_TO_START = 180
+MODEL_MAX_MINUTES_TO_START = 720
 MODEL_HISTORY_LOOKBACK_HOURS = 48
 
 def filter_recent_rows(rows):
@@ -539,6 +539,18 @@ def classify_signal_stage(snapshot, model_output):
                 return "early_watch_shadow_size_ratio"
             discard_reason = "single_wallet_size_ratio_mid_range"
         elif model_score < 30:
+            latest_edge_pct = parse_float(snapshot.get("latest_edge_pct"), 0.0)
+            latest_score = parse_int(snapshot.get("latest_score"), 0)
+
+            if (
+                60 < minutes_to_start <= MODEL_MAX_MINUTES_TO_START
+                and total_notional >= 10000
+                and max_size_ratio >= 5
+                and latest_score >= 70
+                and latest_edge_pct >= 0
+            ):
+                return "early_watch_shadow"
+
             discard_reason = "single_wallet_score_too_low"
         elif minutes_to_start <= 60:
             discard_reason = "single_wallet_too_close_to_start"
@@ -706,7 +718,13 @@ def build_recommendations(rows):
         row["signal_stage"] = signal_stage
 
         recommendation = str(row.get("recommendation", "") or "").upper()
-        if signal_stage in {"early_watch", "confirmed"} and recommendation in {"LEAN", "BET"}:
+        if signal_stage in {"early_watch", "early_watch_shadow"}:
+            if recommendation == "PASS":
+                row["recommendation"] = "WATCH"
+                row["recommended_stake_pct"] = 0
+                row["reasons"] = list(row.get("reasons", [])) + ["surfaced for market-model tracking"]
+            recommendations.append(row)
+        elif signal_stage == "confirmed" and recommendation in {"LEAN", "BET"}:
             recommendations.append(row)
 
     recommendations.sort(
@@ -843,42 +861,45 @@ if __name__ == "__main__":
     )
     print(f"MODEL HISTORY LOOKBACK HOURS: {MODEL_HISTORY_LOOKBACK_HOURS}")
 
+
     signal_metrics_history = load_signal_metrics_history()
     recent_signal_metrics_history = filter_recent_signal_metrics_rows(
         signal_metrics_history,
         MODEL_HISTORY_LOOKBACK_HOURS,
     )
 
+
     print(f"Loaded signal metrics rows: {len(signal_metrics_history)}")
     print(f"Recent signal metrics rows: {len(recent_signal_metrics_history)}")
 
-signal_metrics_history = load_signal_metrics_history()
-recent_signal_metrics_history = filter_recent_rows(signal_metrics_history)
 
-recommendations = build_recommendations(recent_signal_metrics_history)
-save_recommendations_json(recommendations)
+    recommendations = build_recommendations(recent_signal_metrics_history)
+    save_recommendations_json(recommendations)
 
-early_watch_diagnostics = getattr(
-    build_recommendations,
-    "last_early_watch_diagnostics",
-    {},
-)
 
-print("=" * 80)
-print("EARLY WATCH DIAGNOSTICS - MARKET SNAPSHOT LAYER")
-print("=" * 80)
-print(f"Total snapshots: {early_watch_diagnostics.get('total_snapshots', 0)}")
-print(f"In-window snapshots: {early_watch_diagnostics.get('in_window_snapshots', 0)}")
-print(f"Single-wallet snapshots: {early_watch_diagnostics.get('single_wallet_snapshots', 0)}")
-print(f"Single-wallet high size ratio: {early_watch_diagnostics.get('single_wallet_high_size_ratio', 0)}")
-print(f"Single-wallet high notional: {early_watch_diagnostics.get('single_wallet_high_notional', 0)}")
-print(f"Single-wallet strong: {early_watch_diagnostics.get('single_wallet_strong', 0)}")
-print(f"Multi-wallet snapshots: {early_watch_diagnostics.get('multi_wallet_snapshots', 0)}")
-print(f"Multi-wallet high size ratio: {early_watch_diagnostics.get('multi_wallet_high_size_ratio', 0)}")
-print(f"Multi-wallet high notional: {early_watch_diagnostics.get('multi_wallet_high_notional', 0)}")
-print(f"Multi-wallet strong: {early_watch_diagnostics.get('multi_wallet_strong', 0)}")
-print(f"Classified early_watch: {early_watch_diagnostics.get('classified_early_watch', 0)}")
-print(f"Classified confirmed: {early_watch_diagnostics.get('classified_confirmed', 0)}")
-print(f"Classified discard: {early_watch_diagnostics.get('classified_discard', 0)}")
+    early_watch_diagnostics = getattr(
+        build_recommendations,
+        "last_early_watch_diagnostics",
+        {},
+    )
 
-print_recommendations(recommendations)
+
+    print("=" * 80)
+    print("EARLY WATCH DIAGNOSTICS - MARKET SNAPSHOT LAYER")
+    print("=" * 80)
+    print(f"Total snapshots: {early_watch_diagnostics.get('total_snapshots', 0)}")
+    print(f"In-window snapshots: {early_watch_diagnostics.get('in_window_snapshots', 0)}")
+    print(f"Single-wallet snapshots: {early_watch_diagnostics.get('single_wallet_snapshots', 0)}")
+    print(f"Single-wallet high size ratio: {early_watch_diagnostics.get('single_wallet_high_size_ratio', 0)}")
+    print(f"Single-wallet high notional: {early_watch_diagnostics.get('single_wallet_high_notional', 0)}")
+    print(f"Single-wallet strong: {early_watch_diagnostics.get('single_wallet_strong', 0)}")
+    print(f"Multi-wallet snapshots: {early_watch_diagnostics.get('multi_wallet_snapshots', 0)}")
+    print(f"Multi-wallet high size ratio: {early_watch_diagnostics.get('multi_wallet_high_size_ratio', 0)}")
+    print(f"Multi-wallet high notional: {early_watch_diagnostics.get('multi_wallet_high_notional', 0)}")
+    print(f"Multi-wallet strong: {early_watch_diagnostics.get('multi_wallet_strong', 0)}")
+    print(f"Classified early_watch: {early_watch_diagnostics.get('classified_early_watch', 0)}")
+    print(f"Classified confirmed: {early_watch_diagnostics.get('classified_confirmed', 0)}")
+    print(f"Classified discard: {early_watch_diagnostics.get('classified_discard', 0)}")
+
+
+    print_recommendations(recommendations)
