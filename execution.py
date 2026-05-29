@@ -19,6 +19,9 @@ LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS = int(os.getenv("LIVE_ORDER_MAX_SIGNAL_AGE_SEC
 LIVE_ORDER_MIN_PRICE = Decimal(os.getenv("LIVE_ORDER_MIN_PRICE", "0.05"))
 LIVE_ORDER_MAX_PRICE = Decimal(os.getenv("LIVE_ORDER_MAX_PRICE", "0.95"))
 LIVE_ORDER_MAX_USD = Decimal(os.getenv("LIVE_ORDER_MAX_USD", "2"))
+LIVE_ORDER_TENNIS_MAX_USD = Decimal(os.getenv("LIVE_ORDER_TENNIS_MAX_USD", "1"))
+LIVE_ORDER_TENNIS_MAX_SIGNAL_AGE_SECONDS = int(os.getenv("LIVE_ORDER_TENNIS_MAX_SIGNAL_AGE_SECONDS", "60"))
+LIVE_ORDER_TENNIS_MAX_FAVORABLE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_TENNIS_MAX_FAVORABLE_DRIFT_CENTS", "3"))
 
 LIVE_ORDER_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_MAX_CHASE_DRIFT_CENTS", "2.5"))
 LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS", "5"))
@@ -219,6 +222,8 @@ def is_supported_execution_market(market_slug):
         "nba-",
         "mlb-",
         "wnba-",
+        "atp-",
+        "wta-",
     )
 
     if not slug.startswith(supported_league_prefixes):
@@ -254,6 +259,8 @@ def is_live_order_whitelisted_market(market_slug):
         "tsc-nba-",
         "tsc-mlb-",
         "tsc-wnba-",
+        "atp-",
+        "wta-",
     )
 
     if not resolved_slug.startswith(supported_live_prefixes):
@@ -471,6 +478,10 @@ def validate_live_order_safety(price, signal_context=None):
     signal_context = signal_context or {}
     price_decimal = Decimal(str(price))
 
+    market_slug = str(signal_context.get("market_slug") or "").strip().lower()
+    resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
+    is_tennis_market = resolved_market_slug.startswith(("atp-", "wta-"))
+
     if price_decimal < LIVE_ORDER_MIN_PRICE:
         return False, f"price_below_min:{price_decimal}"
 
@@ -478,13 +489,14 @@ def validate_live_order_safety(price, signal_context=None):
         return False, f"price_above_max:{price_decimal}"
 
     signal_age_seconds = signal_context.get("since_last_buy_s")
+    max_signal_age_seconds = LIVE_ORDER_TENNIS_MAX_SIGNAL_AGE_SECONDS if is_tennis_market else LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS
 
     if signal_age_seconds is not None:
         try:
             signal_age_seconds = int(float(signal_age_seconds))
 
-            if signal_age_seconds > LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS:
-                return False, f"signal_too_old:{signal_age_seconds}s"
+            if signal_age_seconds > max_signal_age_seconds:
+                return False, f"signal_too_old:{signal_age_seconds}s,max={max_signal_age_seconds}s"
 
         except Exception:
             return False, f"invalid_signal_age:{signal_age_seconds}"
@@ -508,6 +520,9 @@ def validate_live_order_safety(price, signal_context=None):
 
     chase_drift_decimal = price_decimal - wallet_entry_decimal
     chase_drift_cents = chase_drift_decimal * Decimal("100")
+
+    if is_tennis_market and chase_drift_cents < (LIVE_ORDER_TENNIS_MAX_FAVORABLE_DRIFT_CENTS * Decimal("-1")):
+        return False, f"tennis_favorable_drift_too_large:{chase_drift_cents:.2f}c"
 
     hard_max_drift_decimal = LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS / Decimal("100")
     max_drift_decimal = LIVE_ORDER_MAX_CHASE_DRIFT_CENTS / Decimal("100")
@@ -533,12 +548,21 @@ def execute_order_safely(
     effective_max_order_usd = max_order_usd
 
     if ENABLE_REAL_MONEY_ORDERS:
+        resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
+        is_tennis_market = resolved_market_slug.startswith(("atp-", "wta-"))
+
         if effective_max_order_usd is None:
             effective_max_order_usd = LIVE_ORDER_MAX_USD
         else:
             effective_max_order_usd = min(
                 Decimal(str(effective_max_order_usd)),
                 LIVE_ORDER_MAX_USD,
+            )
+
+        if is_tennis_market:
+            effective_max_order_usd = min(
+                Decimal(str(effective_max_order_usd)),
+                LIVE_ORDER_TENNIS_MAX_USD,
             )
 
     payload = build_order_payload(

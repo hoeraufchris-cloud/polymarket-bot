@@ -8574,6 +8574,7 @@ if __name__ == "__main__":
                                     price=execution_price,
                                     max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
                                     signal_context={
+                                        "market_slug": execution_slug,
                                         "edge_percent": derived_edge_percent,
                                         "since_last_buy_s": derived_since_last_buy_s,
                                         "market_phase": alert_g.get("market_phase"),
