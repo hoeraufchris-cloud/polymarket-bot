@@ -3,9 +3,6 @@ import os
 import time
 from decimal import Decimal, ROUND_DOWN
 
-from polymarket_us import PolymarketUS
-
-
 ENABLE_REAL_MONEY_ORDERS = os.getenv("ENABLE_REAL_MONEY_ORDERS", "false").lower() == "true"
 POLYMARKET_KEY_ID = os.getenv("POLYMARKET_KEY_ID")
 POLYMARKET_SECRET_KEY = os.getenv("POLYMARKET_SECRET_KEY")
@@ -25,6 +22,7 @@ LIVE_ORDER_TENNIS_MAX_FAVORABLE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_TENN
 
 LIVE_ORDER_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_MAX_CHASE_DRIFT_CENTS", "2.5"))
 LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS = Decimal(os.getenv("LIVE_ORDER_HARD_MAX_CHASE_DRIFT_CENTS", "5"))
+LIVE_ORDER_MIN_EDGE_PERCENT = Decimal(os.getenv("LIVE_ORDER_MIN_EDGE_PERCENT", "1.0"))
 
 EXECUTION_LEDGER_PATH = os.getenv(
     "EXECUTION_LEDGER_PATH",
@@ -41,6 +39,11 @@ EXECUTION_SLUG_ALIAS_PATH = os.getenv(
 
 
 def get_polymarket_client():
+    try:
+        from polymarket_us import PolymarketUS
+    except Exception as e:
+        raise RuntimeError(f"Missing polymarket_us client module: {e}")
+
     if not POLYMARKET_KEY_ID:
         raise RuntimeError("Missing POLYMARKET_KEY_ID env var")
 
@@ -204,13 +207,87 @@ def convert_feed_slug_to_us_slug(market_slug):
         return "atc-" + converted
 
     if converted.startswith(tennis_league_prefixes):
-        return converted
+        return "aec-" + converted
 
     if converted.startswith(moneyline_league_prefixes):
         return "aec-" + converted
 
     return converted
 
+def build_execution_slug_candidates(market_slug):
+    slug = str(market_slug or "").strip().lower()
+
+    if not slug:
+        return []
+
+
+    candidates = []
+
+
+    def add_candidate(candidate):
+        candidate = str(candidate or "").strip().lower()
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+
+    add_candidate(convert_feed_slug_to_us_slug(slug))
+
+
+    parts = slug.split("-")
+    if len(parts) < 6:
+        return candidates
+
+
+    league = parts[0]
+
+
+    date_index = None
+    for i in range(1, len(parts) - 2):
+        if (
+            len(parts[i]) == 4
+            and parts[i].isdigit()
+            and len(parts[i + 1]) == 2
+            and parts[i + 1].isdigit()
+            and len(parts[i + 2]) == 2
+            and parts[i + 2].isdigit()
+        ):
+            date_index = i
+            break
+
+
+    if date_index is None:
+        return candidates
+
+
+    if date_index < 3:
+        return candidates
+
+
+    if league not in {"nba", "mlb", "wnba"}:
+        return candidates
+
+
+    team_parts = parts[1:date_index]
+    date_parts = parts[date_index:date_index + 3]
+    suffix_parts = parts[date_index + 3:]
+
+
+    if len(team_parts) != 2:
+        return candidates
+
+
+    team_a = team_parts[0]
+    team_b = team_parts[1]
+
+
+    reversed_feed_slug_parts = [league, team_b, team_a] + date_parts + suffix_parts
+    reversed_feed_slug = "-".join(reversed_feed_slug_parts)
+
+
+    add_candidate(convert_feed_slug_to_us_slug(reversed_feed_slug))
+
+
+    return candidates
 
 def is_supported_execution_market(market_slug):
     slug = str(market_slug or "").strip().lower()
@@ -224,10 +301,24 @@ def is_supported_execution_market(market_slug):
         "wnba-",
         "atp-",
         "wta-",
+        "j100-",
+        "j1100-",
+        "j2100-",
     )
 
     if not slug.startswith(supported_league_prefixes):
         return False, "unsupported_league_or_prefix"
+
+    tennis_prefixes = (
+        "atp-",
+        "wta-",
+        "j100-",
+        "j1100-",
+        "j2100-",
+    )
+
+    if slug.startswith(tennis_prefixes) and "-total-" in slug:
+        return False, "unsupported_tennis_total"
 
     unsupported_markers = [
         "-player-",
@@ -259,8 +350,11 @@ def is_live_order_whitelisted_market(market_slug):
         "tsc-nba-",
         "tsc-mlb-",
         "tsc-wnba-",
-        "atp-",
-        "wta-",
+        "aec-atp-",
+        "aec-wta-",
+        "aec-j100-",
+        "aec-j1100-",
+        "aec-j2100-",
     )
 
     if not resolved_slug.startswith(supported_live_prefixes):
@@ -480,13 +574,37 @@ def validate_live_order_safety(price, signal_context=None):
 
     market_slug = str(signal_context.get("market_slug") or "").strip().lower()
     resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
-    is_tennis_market = resolved_market_slug.startswith(("atp-", "wta-"))
+    is_tennis_market = resolved_market_slug.startswith((
+        "atp-",
+        "wta-",
+        "j100-",
+        "j1100-",
+        "j2100-",
+        "aec-atp-",
+        "aec-wta-",
+        "aec-j100-",
+        "aec-j1100-",
+        "aec-j2100-",
+    ))
 
     if price_decimal < LIVE_ORDER_MIN_PRICE:
         return False, f"price_below_min:{price_decimal}"
 
     if price_decimal > LIVE_ORDER_MAX_PRICE:
         return False, f"price_above_max:{price_decimal}"
+
+    edge_percent = signal_context.get("edge_percent")
+
+    if edge_percent is None:
+        return False, "missing_edge_percent"
+
+    try:
+        edge_percent_decimal = Decimal(str(edge_percent))
+    except Exception:
+        return False, f"invalid_edge_percent:{edge_percent}"
+
+    if edge_percent_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
+        return False, f"edge_below_min:{edge_percent_decimal}%"
 
     signal_age_seconds = signal_context.get("since_last_buy_s")
     max_signal_age_seconds = LIVE_ORDER_TENNIS_MAX_SIGNAL_AGE_SECONDS if is_tennis_market else LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS
@@ -544,12 +662,27 @@ def execute_order_safely(
     signal_context=None,
 ):
     client = get_polymarket_client()
+    signal_context = signal_context or {}
+
 
     effective_max_order_usd = max_order_usd
 
+
     if ENABLE_REAL_MONEY_ORDERS:
-        resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
-        is_tennis_market = resolved_market_slug.startswith(("atp-", "wta-"))
+        initial_resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
+        is_tennis_market = initial_resolved_market_slug.startswith((
+            "atp-",
+            "wta-",
+            "j100-",
+            "j1100-",
+            "j2100-",
+            "aec-atp-",
+            "aec-wta-",
+            "aec-j100-",
+            "aec-j1100-",
+            "aec-j2100-",
+        ))
+
 
         if effective_max_order_usd is None:
             effective_max_order_usd = LIVE_ORDER_MAX_USD
@@ -559,50 +692,131 @@ def execute_order_safely(
                 LIVE_ORDER_MAX_USD,
             )
 
+
         if is_tennis_market:
             effective_max_order_usd = min(
                 Decimal(str(effective_max_order_usd)),
                 LIVE_ORDER_TENNIS_MAX_USD,
             )
 
-    payload = build_order_payload(
-        market_slug=market_slug,
-        outcome=outcome,
-        price=price,
-        max_order_usd=effective_max_order_usd,
-    )
 
-    request_payload = {
-        "request": payload,
-    }
+    candidate_market_slugs = build_execution_slug_candidates(market_slug)
 
-    preview = client.orders.preview(request_payload)
+
+    if not candidate_market_slugs:
+        candidate_market_slugs = [convert_feed_slug_to_us_slug(market_slug)]
+
+
+    payload = None
+    request_payload = None
+    preview = None
+    preview_error = None
+    resolved_market_slug_used = None
+
+
+    for candidate_market_slug in candidate_market_slugs:
+        try:
+            candidate_payload = build_order_payload(
+                market_slug=candidate_market_slug,
+                outcome=outcome,
+                price=price,
+                max_order_usd=effective_max_order_usd,
+            )
+
+
+            candidate_request_payload = {
+                "request": candidate_payload,
+            }
+
+
+            candidate_preview = client.orders.preview(candidate_request_payload)
+
+
+            payload = candidate_payload
+            request_payload = candidate_request_payload
+            preview = candidate_preview
+            resolved_market_slug_used = candidate_payload.get("marketSlug") or candidate_market_slug
+            preview_error = None
+            break
+
+
+        except Exception as e:
+            preview_error = e
+            continue
+
+
+    if preview is None:
+        raise preview_error or RuntimeError(
+            f"Order preview failed for all candidate slugs: {candidate_market_slugs}"
+        )
+
+
+    safety_context = dict(signal_context)
+    safety_context["market_slug"] = resolved_market_slug_used or market_slug
+
 
     live_safe, live_safety_reason = validate_live_order_safety(
         price=payload["price"]["value"],
-        signal_context=signal_context,
+        signal_context=safety_context,
     )
 
-    live_whitelisted, live_whitelist_reason = is_live_order_whitelisted_market(market_slug)
+
+    live_whitelisted, live_whitelist_reason = is_live_order_whitelisted_market(
+        resolved_market_slug_used or market_slug
+    )
+
 
     if not live_whitelisted:
         live_safe = False
         live_safety_reason = live_whitelist_reason
 
+
+    common_response = {
+        "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
+        "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
+        "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
+        "live_safe": live_safe,
+        "live_safety_reason": live_safety_reason,
+        "live_order_market_whitelisted": live_whitelisted,
+        "live_order_market_whitelist_reason": live_whitelist_reason,
+        "resolved_market_slug_used": resolved_market_slug_used,
+        "candidate_market_slugs": candidate_market_slugs,
+        "payload": payload,
+        "request_payload": request_payload,
+        "preview": preview,
+    }
+
+
     if not ENABLE_REAL_MONEY_ORDERS:
         return {
+            **common_response,
             "mode": "PREVIEW_ONLY_REAL_ORDER_DISABLED",
-            "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
-            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
-            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
-            "live_safe": live_safe,
-            "live_safety_reason": live_safety_reason,
-            "live_order_market_whitelisted": live_whitelisted,
-            "live_order_market_whitelist_reason": live_whitelist_reason,
-            "payload": payload,
-            "request_payload": request_payload,
-            "preview": preview,
         }
+
+
+    if not LIVE_ORDER_CREATE_CONFIRMATION:
+        return {
+            **common_response,
+            "mode": "LIVE_ORDER_BLOCKED_CONFIRMATION_MISSING",
+            "live_safety_reason": "missing_live_order_create_confirmation",
+        }
+
+
+    if not live_safe:
+        return {
+            **common_response,
+            "mode": "LIVE_ORDER_BLOCKED_SAFETY_CHECK",
+        }
+
+
+    order = client.orders.create(request_payload)
+
+
+    return {
+        **common_response,
+        "mode": "LIVE_ORDER_PLACED",
+        "order": order,
+    }
 
     if not LIVE_ORDER_CREATE_CONFIRMATION:
         return {

@@ -307,6 +307,7 @@ BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS = 4.0
 BET_ALERT_MAX_LIVE_CHASE_CENTS = 2.0
 BET_ALERT_HEAVY_CHASE_REJECT_CENTS = 6.0
 BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS = -8.0
+BET_ALERT_FINAL_MIN_EDGE_PERCENT = 0.0
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
@@ -8418,6 +8419,58 @@ if __name__ == "__main__":
                     alert_g["reason"] = alert_g["quality_filter_reason"]
 
 
+                final_edge_percent = None
+
+
+                for edge_field in [
+                    "edge_percent",
+                    "edge",
+                    "edge_pct",
+                    "edge_percent_value",
+                ]:
+                    edge_value = alert_g.get(edge_field)
+                    if edge_value is None:
+                        continue
+
+
+                    try:
+                        final_edge_percent = float(edge_value)
+                        break
+                    except Exception:
+                        continue
+
+
+                if final_edge_percent is None:
+                    try:
+                        final_fair_price = float(alert_g.get("fair_price"))
+                        final_current_price = float(alert_g.get("current_price"))
+
+
+                        if final_current_price > 0:
+                            final_edge_percent = (
+                                (final_fair_price - final_current_price)
+                                / final_current_price
+                            ) * 100
+                    except Exception:
+                        final_edge_percent = None
+
+
+                if (
+                    str(alert_g.get("label", "") or "").upper() == "BET"
+                    and final_edge_percent is not None
+                    and final_edge_percent < BET_ALERT_FINAL_MIN_EDGE_PERCENT
+                ):
+                    alert_g["label"] = "PASS"
+                    alert_g["score"] = 0
+                    alert_g["stake_pct"] = 0
+                    alert_g["quality_filter_reason"] = (
+                        f"Final filter: negative edge "
+                        f"({round(final_edge_percent, 2)}%, "
+                        f"min {round(BET_ALERT_FINAL_MIN_EDGE_PERCENT, 2)}%)"
+                    )
+                    alert_g["reason"] = alert_g["quality_filter_reason"]
+
+
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
                 decision = classify_bet_alert_decision(
                     alert_g,
@@ -8646,6 +8699,7 @@ if __name__ == "__main__":
                                     print(
                                         "[ORDER PREVIEW OK] "
                                         f"market={execution_slug} "
+                                        f"resolved_market={execution_preview.get('resolved_market_slug_used')} "
                                         f"outcome={execution_outcome} "
                                         f"price={execution_price} "
                                         f"quantity={alert_g.get('execution_preview_quantity')} "
@@ -8702,9 +8756,16 @@ if __name__ == "__main__":
                                         f"error={ledger_error}"
                                     )
 
+                                try:
+                                    from execution import convert_feed_slug_to_us_slug
+                                    resolved_execution_slug_for_log = convert_feed_slug_to_us_slug(execution_slug)
+                                except Exception:
+                                    resolved_execution_slug_for_log = execution_slug
+
                                 print(
                                     "[ORDER PREVIEW FAILED] "
                                     f"market={execution_slug} "
+                                    f"resolved_market={resolved_execution_slug_for_log} "
                                     f"outcome={execution_outcome} "
                                     f"price={execution_price} "
                                     f"error={e}"
