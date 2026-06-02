@@ -14,6 +14,7 @@ all_alerts.json
 data/
 service_account.json
 tracked_bets_export.csv
+data/all_bet_signals.csv
 
 # Exports
 *.csv

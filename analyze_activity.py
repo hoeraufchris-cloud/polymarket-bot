@@ -222,6 +222,7 @@ SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
 TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
 INSIDER_DIAGNOSTICS_CSV_PATH = f"{DATA_DIR}/insider_diagnostics.csv"
 WALLET_HISTORY_STATS_PATH = f"{DATA_DIR}/wallet_history_stats.json"
+ALL_BET_SIGNALS_CSV_PATH = f"{DATA_DIR}/all_bet_signals.csv"
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -308,6 +309,15 @@ BET_ALERT_MAX_LIVE_CHASE_CENTS = 2.0
 BET_ALERT_HEAVY_CHASE_REJECT_CENTS = 6.0
 BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS = -8.0
 BET_ALERT_FINAL_MIN_EDGE_PERCENT = 0.0
+
+WALLET_GUARDRAILS_ENABLED = True
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 8
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS = 12
+WALLET_GUARDRAIL_CAP_MAX_ROI = -5.0
+WALLET_GUARDRAIL_SUPPRESS_MAX_ROI = -15.0
+WALLET_GUARDRAIL_CAP_STAKE_PCT = 40
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED = 15
+WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
@@ -435,6 +445,244 @@ def apply_phase_sequence_score_adjustment(score, g):
             adjusted_score -= BET_ALERT_PRE_LEADER_SCORE_PENALTY
 
     return max(0, adjusted_score)
+
+_WALLET_PERFORMANCE_GUARDRAIL_CACHE = None
+
+
+def _wallet_guardrail_float(value, default=0.0):
+    try:
+        if value is None:
+            return default
+
+        value_str = str(value).strip()
+        if value_str == "":
+            return default
+
+        value_str = value_str.replace("$", "").replace(",", "").replace("%", "")
+        return float(value_str)
+    except Exception:
+        return default
+
+
+def _wallet_guardrail_is_resolved(value):
+    return str(value or "").strip().lower() == "true"
+
+
+def load_wallet_performance_guardrails():
+    global _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+
+    if _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None:
+        return _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+
+    guardrails = {}
+
+    if not WALLET_GUARDRAILS_ENABLED:
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        return guardrails
+
+    if not os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
+        print(f"[WALLET GUARDRAILS] no_csv_found path={ALL_BET_SIGNALS_CSV_PATH}")
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        return guardrails
+
+    wallet_rows = {}
+
+    try:
+        with open(ALL_BET_SIGNALS_CSV_PATH, "r", encoding="utf-8-sig", newline="") as f:
+            reader = csv.DictReader(f)
+
+            for row in reader:
+                if not isinstance(row, dict):
+                    continue
+
+                row = {
+                    str(key or "").strip(): value
+                    for key, value in row.items()
+                }
+
+                if not _wallet_guardrail_is_resolved(row.get("Resolved")):
+                    continue
+
+                wallet = str(row.get("Wallet", "") or "").strip().lower()
+                if not wallet.startswith("0x"):
+                    continue
+
+                stake = _wallet_guardrail_float(row.get("Bet Size"), 0.0)
+                profit = _wallet_guardrail_float(row.get("Bet Profit"), 0.0)
+                result = str(row.get("Result", "") or "").strip().upper()
+
+                if stake <= 0:
+                    continue
+
+                if wallet not in wallet_rows:
+                    wallet_rows[wallet] = {
+                        "resolved": 0,
+                        "wins": 0,
+                        "losses": 0,
+                        "stake": 0.0,
+                        "profit": 0.0,
+                    }
+
+                wallet_rows[wallet]["resolved"] += 1
+                wallet_rows[wallet]["stake"] += stake
+                wallet_rows[wallet]["profit"] += profit
+
+                if result == "WIN":
+                    wallet_rows[wallet]["wins"] += 1
+                elif result == "LOSS":
+                    wallet_rows[wallet]["losses"] += 1
+
+    except Exception as e:
+        print(f"[WALLET GUARDRAIL LOAD ERROR] path={ALL_BET_SIGNALS_CSV_PATH} error={repr(e)}")
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        return guardrails
+
+    for wallet, stats in wallet_rows.items():
+        resolved = int(stats.get("resolved", 0) or 0)
+        stake = float(stats.get("stake", 0.0) or 0.0)
+        profit = float(stats.get("profit", 0.0) or 0.0)
+
+        roi = None
+        if stake > 0:
+            roi = (profit / stake) * 100
+
+        win_rate = None
+        if resolved > 0:
+            win_rate = (float(stats.get("wins", 0) or 0) / resolved) * 100
+
+        action = "allow"
+
+        if (
+            roi is not None
+            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS
+            and roi <= WALLET_GUARDRAIL_SUPPRESS_MAX_ROI
+        ):
+            action = "suppress"
+
+        elif (
+            roi is not None
+            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP
+            and roi <= WALLET_GUARDRAIL_CAP_MAX_ROI
+        ):
+            action = "cap_lean"
+
+        elif (
+            roi is not None
+            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED
+            and roi >= WALLET_GUARDRAIL_TRUSTED_MIN_ROI
+        ):
+            action = "trusted"
+
+        guardrails[wallet] = {
+            "wallet": wallet,
+            "action": action,
+            "resolved": resolved,
+            "wins": int(stats.get("wins", 0) or 0),
+            "losses": int(stats.get("losses", 0) or 0),
+            "stake": round(stake, 2),
+            "profit": round(profit, 2),
+            "roi": roi,
+            "win_rate": win_rate,
+        }
+
+    suppress_count = sum(1 for row in guardrails.values() if row.get("action") == "suppress")
+    cap_count = sum(1 for row in guardrails.values() if row.get("action") == "cap_lean")
+    trusted_count = sum(1 for row in guardrails.values() if row.get("action") == "trusted")
+
+    print(
+        "[WALLET GUARDRAILS] "
+        f"loaded={len(guardrails)} "
+        f"suppress={suppress_count} "
+        f"cap_lean={cap_count} "
+        f"trusted={trusted_count} "
+        f"path={ALL_BET_SIGNALS_CSV_PATH}"
+    )
+
+    _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+    return guardrails
+
+
+def apply_wallet_performance_guardrail(g, wallet_guardrails):
+    if not isinstance(g, dict):
+        return g
+
+    if not WALLET_GUARDRAILS_ENABLED:
+        return g
+
+    wallet = str(g.get("wallet", "") or "").strip().lower()
+    if not wallet.startswith("0x"):
+        return g
+
+    if not isinstance(wallet_guardrails, dict):
+        return g
+
+    guardrail = wallet_guardrails.get(wallet)
+    if not isinstance(guardrail, dict):
+        return g
+
+    action = str(guardrail.get("action", "") or "").strip()
+
+    if action in {"", "allow"}:
+        return g
+
+    resolved = int(guardrail.get("resolved", 0) or 0)
+    roi = guardrail.get("roi")
+    win_rate = guardrail.get("win_rate")
+
+    try:
+        roi_display = f"{round(float(roi), 2)}%"
+    except Exception:
+        roi_display = "N/A"
+
+    try:
+        win_rate_display = f"{round(float(win_rate), 1)}%"
+    except Exception:
+        win_rate_display = "N/A"
+
+    g["wallet_guardrail_action"] = action
+    g["wallet_guardrail_resolved"] = resolved
+    g["wallet_guardrail_roi"] = roi
+    g["wallet_guardrail_win_rate"] = win_rate
+
+    if action == "suppress":
+        g["label"] = "PASS"
+        g["score"] = 0
+        g["stake_pct"] = 0
+        g["quality_filter_reason"] = (
+            f"Wallet guardrail suppressed "
+            f"(resolved={resolved}, roi={roi_display}, win_rate={win_rate_display})"
+        )
+        g["reason"] = g["quality_filter_reason"]
+        g["auto_bet_blocked"] = True
+        g["auto_bet_block_reason"] = "wallet_guardrail_suppressed"
+
+    elif action == "cap_lean":
+        if str(g.get("label", "") or "").upper() == "BET":
+            g["label"] = "LEAN"
+            g["stake_pct"] = min(
+                int(float(g.get("stake_pct", WALLET_GUARDRAIL_CAP_STAKE_PCT) or WALLET_GUARDRAIL_CAP_STAKE_PCT)),
+                WALLET_GUARDRAIL_CAP_STAKE_PCT,
+            )
+            g["quality_filter_reason"] = (
+                f"Wallet guardrail capped to LEAN "
+                f"(resolved={resolved}, roi={roi_display}, win_rate={win_rate_display})"
+            )
+            g["reason"] = (
+                f"{g.get('reason', '')} | "
+                f"{g['quality_filter_reason']}"
+            ).strip(" |")
+            g["auto_bet_blocked"] = True
+            g["auto_bet_block_reason"] = "wallet_guardrail_cap_lean"
+
+    elif action == "trusted":
+        g["wallet_guardrail_trusted"] = True
+        g["reason"] = (
+            f"{g.get('reason', '')} | "
+            f"Trusted wallet guardrail pass "
+            f"(resolved={resolved}, roi={roi_display}, win_rate={win_rate_display})"
+        ).strip(" |")
+
+    return g
 
 def is_strong_unit_roi_signal(g, wallet_profiles):
     if not isinstance(g, dict):
@@ -8387,6 +8635,8 @@ if __name__ == "__main__":
                 alert_candidates.append(g)
                 alert_candidate_keys_seen.add(candidate_key)
 
+            wallet_performance_guardrails = load_wallet_performance_guardrails()
+
             new_bet_alerts = []
             for g in alert_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
@@ -8466,6 +8716,11 @@ if __name__ == "__main__":
                     )
                     alert_g["reason"] = alert_g["quality_filter_reason"]
 
+
+                alert_g = apply_wallet_performance_guardrail(
+                    alert_g,
+                    wallet_performance_guardrails,
+                )
 
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
                 decision = classify_bet_alert_decision(
