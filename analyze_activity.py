@@ -318,14 +318,7 @@ ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x13414a77a4be48988851c73dfd824d0168e70853",
 }
 
-ALERT_QUALITY_BLOCKED_SPORT_PHASES = {
-    ("NBA", "Live"),
-    ("MLB", "Pre-Game"),
-    ("NHL", "Pre-Game"),
-    ("Other", "Pre-Game"),
-    ("Esports", "Live"),
-    ("Esports", "Pre-Game"),
-}
+ALERT_QUALITY_BLOCKED_SPORT_PHASES = set()
 
 ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK = 7
 ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK = 35.0
@@ -2989,10 +2982,13 @@ def attach_position_data_and_score(
                 )
 
             elif fair_price is None or edge_pct is None or wallet_entry_price is None:
-                g["label"] = "PASS"
-                g["score"] = 0
-                g["stake_pct"] = 0
-                g["reason"] = "Final filter: missing fair price / edge data for BET"
+                g["manual_review_missing_fair_price"] = True
+                g["auto_bet_blocked"] = True
+                g["auto_bet_block_reason"] = "missing_fair_price_or_edge"
+                g["reason"] = (
+                    f"{g.get('reason', '')} | "
+                    "Manual review only: missing fair price / edge data"
+                ).strip(" |")
 
             else:
                 edge_pct = float(edge_pct or 0)
@@ -8620,6 +8616,16 @@ if __name__ == "__main__":
                                     if alert_g.get("avg_trade_price") is not None
                                     else alert_g.get("fair_price")
                                 )
+
+                                if bool(alert_g.get("auto_bet_blocked", False)):
+                                    print(
+                                        "[ORDER PREVIEW SKIPPED] "
+                                        f"market={execution_slug} "
+                                        f"outcome={execution_outcome} "
+                                        f"price={execution_price} "
+                                        f"reason={alert_g.get('auto_bet_block_reason')}"
+                                    )
+                                    continue
 
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
