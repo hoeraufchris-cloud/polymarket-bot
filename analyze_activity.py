@@ -8829,30 +8829,40 @@ if __name__ == "__main__":
                             try:
                                 from execution import execute_order_safely, record_execution_attempt
 
-                                derived_edge_percent = (
-                                    alert_g.get("edge_percent")
-                                    if alert_g.get("edge_percent") is not None
-                                    else alert_g.get("edge")
-                                    if alert_g.get("edge") is not None
-                                    else alert_g.get("edge_pct")
-                                    if alert_g.get("edge_pct") is not None
-                                    else alert_g.get("edge_percent_value")
-                                    if alert_g.get("edge_percent_value") is not None
-                                    else (
-                                        (
-                                            (
-                                                float(alert_g.get("fair_price"))
-                                                - float(alert_g.get("current_price"))
-                                            )
-                                            / float(alert_g.get("current_price"))
-                                        )
-                                        * 100
-                                        if alert_g.get("fair_price") is not None
-                                        and alert_g.get("current_price") is not None
-                                        and float(alert_g.get("current_price")) > 0
-                                        else None
-                                    )
-                                )
+                                derived_edge_percent = None
+
+
+                                for edge_field in [
+                                    "edge_percent",
+                                    "edge_pct",
+                                    "edge",
+                                    "edge_percent_value",
+                                ]:
+                                    edge_value = alert_g.get(edge_field)
+                                    if edge_value is None:
+                                        continue
+
+
+                                    try:
+                                        derived_edge_percent = float(edge_value)
+                                        break
+                                    except Exception:
+                                        continue
+
+
+                                if derived_edge_percent is None:
+                                    try:
+                                        derived_fair_price = float(alert_g.get("fair_price"))
+                                        derived_current_price = float(alert_g.get("current_price"))
+
+
+                                        if derived_current_price > 0:
+                                            derived_edge_percent = (
+                                                (derived_fair_price - derived_current_price)
+                                                / derived_current_price
+                                            ) * 100
+                                    except Exception:
+                                        derived_edge_percent = None
 
                                 derived_since_last_buy_s = (
                                     alert_g.get("since_last_buy_s")
