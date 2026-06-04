@@ -223,6 +223,14 @@ TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
 INSIDER_DIAGNOSTICS_CSV_PATH = f"{DATA_DIR}/insider_diagnostics.csv"
 WALLET_HISTORY_STATS_PATH = f"{DATA_DIR}/wallet_history_stats.json"
 ALL_BET_SIGNALS_CSV_PATH = f"{DATA_DIR}/all_bet_signals.csv"
+ALL_BET_SIGNALS_SHEET_ID = os.environ.get(
+    "ALL_BET_SIGNALS_SHEET_ID",
+    "11JsBWkSWN5RTEnaEQx9uUJzEjNt9aeIU43gPoxfkYLY",
+)
+ALL_BET_SIGNALS_SHEET_GID = os.environ.get(
+    "ALL_BET_SIGNALS_SHEET_GID",
+    "15359334",
+)
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 900
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
@@ -464,8 +472,78 @@ def _wallet_guardrail_float(value, default=0.0):
         return default
 
 
+def _wallet_guardrail_percent(value, default=None):
+    try:
+        if value is None:
+            return default
+
+        value_str = str(value).strip()
+        if value_str == "":
+            return default
+
+        value_str = value_str.replace("$", "").replace(",", "").replace("%", "")
+        return float(value_str)
+    except Exception:
+        return default
+
+
 def _wallet_guardrail_is_resolved(value):
     return str(value or "").strip().lower() == "true"
+
+
+def ensure_all_bet_signals_csv_available():
+    if os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
+        return True
+
+    if not ALL_BET_SIGNALS_SHEET_ID or not ALL_BET_SIGNALS_SHEET_GID:
+        print(
+            "[WALLET GUARDRAILS] no_csv_found_and_sheet_config_missing "
+            f"path={ALL_BET_SIGNALS_CSV_PATH}"
+        )
+        return False
+
+    csv_url = (
+        f"https://docs.google.com/spreadsheets/d/{ALL_BET_SIGNALS_SHEET_ID}/export"
+        f"?format=csv&gid={ALL_BET_SIGNALS_SHEET_GID}"
+    )
+
+    try:
+        response = requests.get(csv_url, timeout=20)
+        response.raise_for_status()
+
+        content_text = response.text or ""
+
+        csv_preview = content_text[:500]
+
+        if (
+            "Date,Market,Bet" not in csv_preview
+            and "Wallet" not in csv_preview
+            and "Total Bets" not in csv_preview
+        ):
+            print(
+                "[WALLET GUARDRAILS] sheet_csv_download_invalid "
+                f"status={response.status_code} "
+                f"preview={content_text[:120]!r}"
+            )
+            return False
+
+        with open(ALL_BET_SIGNALS_CSV_PATH, "w", encoding="utf-8", newline="") as f:
+            f.write(content_text)
+
+        print(
+            "[WALLET GUARDRAILS] downloaded_csv "
+            f"path={ALL_BET_SIGNALS_CSV_PATH} "
+            f"bytes={len(content_text.encode('utf-8'))}"
+        )
+        return True
+
+    except Exception as e:
+        print(
+            "[WALLET GUARDRAILS] sheet_csv_download_failed "
+            f"path={ALL_BET_SIGNALS_CSV_PATH} "
+            f"error={repr(e)}"
+        )
+        return False
 
 
 def load_wallet_performance_guardrails():
@@ -480,7 +558,7 @@ def load_wallet_performance_guardrails():
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
         return guardrails
 
-    if not os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
+    if not ensure_all_bet_signals_csv_available():
         print(f"[WALLET GUARDRAILS] no_csv_found path={ALL_BET_SIGNALS_CSV_PATH}")
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
         return guardrails
@@ -500,11 +578,34 @@ def load_wallet_performance_guardrails():
                     for key, value in row.items()
                 }
 
-                if not _wallet_guardrail_is_resolved(row.get("Resolved")):
-                    continue
-
                 wallet = str(row.get("Wallet", "") or "").strip().lower()
                 if not wallet.startswith("0x"):
+                    continue
+
+                if "Total Bets" in row and "Total ROI" in row:
+                    resolved = int(_wallet_guardrail_float(row.get("Total Bets"), 0.0))
+                    profit = _wallet_guardrail_float(row.get("Total Profit"), 0.0)
+                    roi = _wallet_guardrail_percent(row.get("Total ROI"), None)
+
+                    if resolved <= 0 or roi is None:
+                        continue
+
+                    stake = 0.0
+                    if roi != 0:
+                        stake = profit / (roi / 100.0)
+
+                    wallet_rows[wallet] = {
+                        "resolved": resolved,
+                        "wins": 0,
+                        "losses": 0,
+                        "stake": round(stake, 2),
+                        "profit": round(profit, 2),
+                        "summary_roi": roi,
+                    }
+
+                    continue
+
+                if not _wallet_guardrail_is_resolved(row.get("Resolved")):
                     continue
 
                 stake = _wallet_guardrail_float(row.get("Bet Size"), 0.0)
@@ -542,8 +643,9 @@ def load_wallet_performance_guardrails():
         stake = float(stats.get("stake", 0.0) or 0.0)
         profit = float(stats.get("profit", 0.0) or 0.0)
 
-        roi = None
-        if stake > 0:
+        roi = stats.get("summary_roi")
+
+        if roi is None and stake > 0:
             roi = (profit / stake) * 100
 
         win_rate = None
