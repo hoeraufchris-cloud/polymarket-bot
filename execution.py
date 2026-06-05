@@ -595,16 +595,21 @@ def validate_live_order_safety(price, signal_context=None):
 
     edge_percent = signal_context.get("edge_percent")
 
-    if edge_percent is None:
+    trusted_no_edge_auto_bet_allowed = bool(
+        signal_context.get("trusted_no_edge_auto_bet_allowed", False)
+    )
+
+    if edge_percent is None and not trusted_no_edge_auto_bet_allowed:
         return False, "missing_edge_percent"
 
-    try:
-        edge_percent_decimal = Decimal(str(edge_percent))
-    except Exception:
-        return False, f"invalid_edge_percent:{edge_percent}"
+    if edge_percent is not None:
+        try:
+            edge_percent_decimal = Decimal(str(edge_percent))
+        except Exception:
+            return False, f"invalid_edge_percent:{edge_percent}"
 
-    if edge_percent_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
-        return False, f"edge_below_min:{edge_percent_decimal}%"
+        if edge_percent_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
+            return False, f"edge_below_min:{edge_percent_decimal}%"
 
     signal_age_seconds = signal_context.get("since_last_buy_s")
     max_signal_age_seconds = LIVE_ORDER_TENNIS_MAX_SIGNAL_AGE_SECONDS if is_tennis_market else LIVE_ORDER_MAX_SIGNAL_AGE_SECONDS

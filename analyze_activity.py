@@ -327,6 +327,13 @@ WALLET_GUARDRAIL_CAP_STAKE_PCT = 40
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED = 15
 WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 
+TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
+TRUSTED_NO_EDGE_AUTO_BET_MAX_USD = 1
+TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 85
+TRUSTED_NO_EDGE_AUTO_BET_MAX_SIGNAL_AGE_SECONDS = 90
+TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS = 1.5
+TRUSTED_NO_EDGE_AUTO_BET_MAX_FAVORABLE_DRIFT_CENTS = -6.0
+
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
     "0xc8075693f48668a264b9fa313b47f52712fcc12b",
@@ -703,6 +710,63 @@ def load_wallet_performance_guardrails():
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
     return guardrails
 
+def is_trusted_no_edge_auto_bet_allowed(g):
+    if not TRUSTED_NO_EDGE_AUTO_BET_ENABLED:
+        return False
+
+    if not isinstance(g, dict):
+        return False
+
+    if not bool(g.get("wallet_guardrail_trusted", False)):
+        return False
+
+    if not bool(g.get("manual_review_missing_fair_price", False)):
+        return False
+
+    if str(g.get("label", "") or "").upper() != "BET":
+        return False
+
+    try:
+        score = float(g.get("score", 0) or 0)
+    except Exception:
+        score = 0.0
+
+    if score < TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE:
+        return False
+
+    try:
+        signal_age_seconds = float(g.get("since_last_buy_s", 999999) or 999999)
+    except Exception:
+        signal_age_seconds = 999999
+
+    if signal_age_seconds > TRUSTED_NO_EDGE_AUTO_BET_MAX_SIGNAL_AGE_SECONDS:
+        return False
+
+    try:
+        market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
+    except Exception:
+        market_movement_cents = 0.0
+
+    if market_movement_cents > TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS:
+        return False
+
+    if market_movement_cents < TRUSTED_NO_EDGE_AUTO_BET_MAX_FAVORABLE_DRIFT_CENTS:
+        return False
+
+    market_slug = str(g.get("market_slug") or g.get("slug") or "").strip().lower()
+
+    supported_no_edge_prefixes = (
+        "mlb-",
+        "nba-",
+        "wnba-",
+        "atp-",
+        "wta-",
+    )
+
+    if not market_slug.startswith(supported_no_edge_prefixes):
+        return False
+
+    return True
 
 def apply_wallet_performance_guardrail(g, wallet_guardrails):
     if not isinstance(g, dict):
@@ -8984,7 +9048,9 @@ if __name__ == "__main__":
                                     else alert_g.get("fair_price")
                                 )
 
-                                if bool(alert_g.get("auto_bet_blocked", False)):
+                                trusted_no_edge_auto_bet_allowed = is_trusted_no_edge_auto_bet_allowed(alert_g)
+
+                                if bool(alert_g.get("auto_bet_blocked", False)) and not trusted_no_edge_auto_bet_allowed:
                                     print(
                                         "[ORDER PREVIEW SKIPPED] "
                                         f"market={execution_slug} "
@@ -8994,14 +9060,24 @@ if __name__ == "__main__":
                                     )
                                     continue
 
+                                if trusted_no_edge_auto_bet_allowed:
+                                    alert_g["trusted_no_edge_auto_bet_allowed"] = True
+                                    alert_g["auto_bet_blocked"] = False
+                                    alert_g["auto_bet_block_reason"] = None
+
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
                                     price=execution_price,
-                                    max_order_usd=__import__("os").getenv("AUTO_BET_PREVIEW_MAX_ORDER_USD", "5"),
+                                    max_order_usd=(
+                                        TRUSTED_NO_EDGE_AUTO_BET_MAX_USD
+                                        if bool(alert_g.get("trusted_no_edge_auto_bet_allowed", False))
+                                        else execution_max_order_usd
+                                    ),
                                     signal_context={
                                         "market_slug": execution_slug,
                                         "edge_percent": derived_edge_percent,
+                                        "trusted_no_edge_auto_bet_allowed": bool(alert_g.get("trusted_no_edge_auto_bet_allowed", False)),
                                         "since_last_buy_s": derived_since_last_buy_s,
                                         "market_phase": alert_g.get("market_phase"),
                                         "stake_percent": (
