@@ -9065,6 +9065,13 @@ if __name__ == "__main__":
                                     alert_g["auto_bet_blocked"] = False
                                     alert_g["auto_bet_block_reason"] = None
 
+                                try:
+                                    execution_max_order_usd = float(
+                                        os.environ.get("LIVE_ORDER_MAX_USD", "2")
+                                    )
+                                except Exception:
+                                    execution_max_order_usd = 2.0
+
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
