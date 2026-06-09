@@ -329,9 +329,9 @@ WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 
 TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
 TRUSTED_NO_EDGE_AUTO_BET_MAX_USD = 1
-TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 85
-TRUSTED_NO_EDGE_AUTO_BET_MAX_SIGNAL_AGE_SECONDS = 90
-TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS = 1.5
+TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 78
+TRUSTED_NO_EDGE_AUTO_BET_MAX_SIGNAL_AGE_SECONDS = 180
+TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS = 2.0
 TRUSTED_NO_EDGE_AUTO_BET_MAX_FAVORABLE_DRIFT_CENTS = -6.0
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
@@ -720,7 +720,13 @@ def is_trusted_no_edge_auto_bet_allowed(g):
     if not bool(g.get("wallet_guardrail_trusted", False)):
         return False
 
-    if not bool(g.get("manual_review_missing_fair_price", False)):
+    missing_edge_block = (
+        bool(g.get("manual_review_missing_fair_price", False))
+        or str(g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge"
+        or "missing fair price / edge" in str(g.get("reason", "") or "").lower()
+    )
+
+    if not missing_edge_block:
         return False
 
     if str(g.get("label", "") or "").upper() != "BET":
@@ -735,7 +741,12 @@ def is_trusted_no_edge_auto_bet_allowed(g):
         return False
 
     try:
-        signal_age_seconds = float(g.get("since_last_buy_s", 999999) or 999999)
+        signal_age_seconds = float(
+            g.get("since_last_buy_s")
+            or g.get("since_last_buy_seconds")
+            or g.get("age_seconds")
+            or 999999
+        )
     except Exception:
         signal_age_seconds = 999999
 
@@ -9051,6 +9062,35 @@ if __name__ == "__main__":
                                 trusted_no_edge_auto_bet_allowed = is_trusted_no_edge_auto_bet_allowed(alert_g)
 
                                 if bool(alert_g.get("auto_bet_blocked", False)) and not trusted_no_edge_auto_bet_allowed:
+                                    if str(alert_g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge":
+                                        try:
+                                            no_edge_debug_score = float(alert_g.get("score", 0) or 0)
+                                        except Exception:
+                                            no_edge_debug_score = 0.0
+
+                                        try:
+                                            no_edge_debug_age = float(
+                                                alert_g.get("since_last_buy_s")
+                                                or alert_g.get("since_last_buy_seconds")
+                                                or alert_g.get("age_seconds")
+                                                or 999999
+                                            )
+                                        except Exception:
+                                            no_edge_debug_age = 999999
+
+                                        print(
+                                            "[TRUSTED NO EDGE CHECK FAILED] "
+                                            f"market={execution_slug} "
+                                            f"outcome={execution_outcome} "
+                                            f"trusted={bool(alert_g.get('wallet_guardrail_trusted', False))} "
+                                            f"manual_missing={bool(alert_g.get('manual_review_missing_fair_price', False))} "
+                                            f"score={no_edge_debug_score} "
+                                            f"age={round(no_edge_debug_age, 1)} "
+                                            f"drift={alert_g.get('market_movement_cents')} "
+                                            f"phase={alert_g.get('market_phase')} "
+                                            f"reason={alert_g.get('auto_bet_block_reason')}"
+                                        )
+
                                     print(
                                         "[ORDER PREVIEW SKIPPED] "
                                         f"market={execution_slug} "
