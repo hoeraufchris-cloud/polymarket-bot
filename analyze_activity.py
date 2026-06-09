@@ -331,8 +331,13 @@ TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
 TRUSTED_NO_EDGE_AUTO_BET_MAX_USD = 1
 TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 78
 TRUSTED_NO_EDGE_AUTO_BET_MAX_SIGNAL_AGE_SECONDS = 180
-TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS = 2.0
+TRUSTED_NO_EDGE_AUTO_BET_MAX_ADVERSE_DRIFT_CENTS = 3.0
 TRUSTED_NO_EDGE_AUTO_BET_MAX_FAVORABLE_DRIFT_CENTS = -6.0
+
+SHARP_ENTRY_PROXY_EDGE_ENABLED = True
+SHARP_ENTRY_PROXY_MAX_CHASE_CENTS = 3.0
+SHARP_ENTRY_PROXY_MIN_SCORE = 78
+SHARP_ENTRY_PROXY_MAX_USD = 1
 
 ALERT_QUALITY_BLOCKED_WALLETS = {
     "0x03e8a544e97eeff5753bc1e90d46e5ef22af1697",
@@ -709,6 +714,77 @@ def load_wallet_performance_guardrails():
 
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
     return guardrails
+
+def apply_sharp_entry_proxy_edge(g):
+    if not SHARP_ENTRY_PROXY_EDGE_ENABLED:
+        return g
+
+    if not isinstance(g, dict):
+        return g
+
+    if str(g.get("label", "") or "").upper() != "BET":
+        return g
+
+    try:
+        score = float(g.get("score", 0) or 0)
+    except Exception:
+        score = 0.0
+
+    if score < SHARP_ENTRY_PROXY_MIN_SCORE:
+        return g
+
+    missing_edge_block = (
+        bool(g.get("manual_review_missing_fair_price", False))
+        or str(g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge"
+        or "missing fair price / edge" in str(g.get("reason", "") or "").lower()
+    )
+
+    if not missing_edge_block:
+        return g
+
+    sharp_entry_price = (
+        g.get("wallet_entry_price")
+        or g.get("avg_trade_price")
+        or g.get("avg_price")
+    )
+
+    current_price = g.get("current_price")
+
+    try:
+        sharp_entry_price = float(sharp_entry_price)
+        current_price = float(current_price)
+    except Exception:
+        return g
+
+    if sharp_entry_price <= 0 or current_price <= 0:
+        return g
+
+    chase_cents = round((current_price - sharp_entry_price) * 100, 2)
+
+    if chase_cents > SHARP_ENTRY_PROXY_MAX_CHASE_CENTS:
+        return g
+
+    try:
+        market_movement_cents = float(g.get("market_movement_cents", chase_cents) or chase_cents)
+    except Exception:
+        market_movement_cents = chase_cents
+
+    if market_movement_cents > SHARP_ENTRY_PROXY_MAX_CHASE_CENTS:
+        return g
+
+    g["sharp_entry_proxy_allowed"] = True
+    g["sharp_entry_proxy_price"] = sharp_entry_price
+    g["sharp_entry_proxy_chase_cents"] = chase_cents
+    g["fair_price"] = sharp_entry_price
+    g["edge_percent"] = (
+        (sharp_entry_price - current_price)
+        / current_price
+    ) * 100
+
+    g["auto_bet_blocked"] = False
+    g["auto_bet_block_reason"] = None
+
+    return g
 
 def is_trusted_no_edge_auto_bet_allowed(g):
     if not TRUSTED_NO_EDGE_AUTO_BET_ENABLED:
@@ -8847,8 +8923,8 @@ if __name__ == "__main__":
 
                 for edge_field in [
                     "edge_percent",
-                    "edge",
                     "edge_pct",
+                    "edge",
                     "edge_percent_value",
                 ]:
                     edge_value = alert_g.get(edge_field)
@@ -8862,6 +8938,32 @@ if __name__ == "__main__":
                     except Exception:
                         continue
 
+
+                if final_edge_percent is None:
+                    try:
+                        sharp_entry_price = (
+                            alert_g.get("wallet_entry_price")
+                            or alert_g.get("avg_trade_price")
+                            or alert_g.get("avg_price")
+                        )
+                        current_price_for_edge = alert_g.get("current_price")
+
+
+                        sharp_entry_price = float(sharp_entry_price)
+                        current_price_for_edge = float(current_price_for_edge)
+
+
+                        if sharp_entry_price > 0 and current_price_for_edge > 0:
+                            final_edge_percent = (
+                                (sharp_entry_price - current_price_for_edge)
+                                / current_price_for_edge
+                            ) * 100
+                            alert_g["edge_percent"] = final_edge_percent
+                            alert_g["edge_percent_value"] = final_edge_percent
+                            alert_g["fair_price"] = sharp_entry_price
+                            alert_g["sharp_entry_proxy_edge"] = True
+                    except Exception:
+                        final_edge_percent = None
 
                 if final_edge_percent is None:
                     try:
@@ -9026,20 +9128,28 @@ if __name__ == "__main__":
                                     except Exception:
                                         continue
 
+                                    if derived_edge_percent is None:
+                                        try:
+                                            derived_fair_price = (
+                                                alert_g.get("fair_price")
+                                                or alert_g.get("wallet_entry_price")
+                                                or alert_g.get("avg_trade_price")
+                                                or alert_g.get("avg_price")
+                                            )
+                                            derived_current_price = alert_g.get("current_price")
 
-                                if derived_edge_percent is None:
-                                    try:
-                                        derived_fair_price = float(alert_g.get("fair_price"))
-                                        derived_current_price = float(alert_g.get("current_price"))
+
+                                            derived_fair_price = float(derived_fair_price)
+                                            derived_current_price = float(derived_current_price)
 
 
-                                        if derived_current_price > 0:
-                                            derived_edge_percent = (
-                                                (derived_fair_price - derived_current_price)
-                                                / derived_current_price
-                                            ) * 100
-                                    except Exception:
-                                        derived_edge_percent = None
+                                            if derived_current_price > 0:
+                                                derived_edge_percent = (
+                                                    (derived_fair_price - derived_current_price)
+                                                    / derived_current_price
+                                                ) * 100
+                                        except Exception:
+                                            derived_edge_percent = None
 
                                 derived_since_last_buy_s = (
                                     alert_g.get("since_last_buy_s")
@@ -9058,6 +9168,8 @@ if __name__ == "__main__":
                                     if alert_g.get("avg_trade_price") is not None
                                     else alert_g.get("fair_price")
                                 )
+
+                                alert_g = apply_sharp_entry_proxy_edge(alert_g)
 
                                 trusted_no_edge_auto_bet_allowed = is_trusted_no_edge_auto_bet_allowed(alert_g)
 
@@ -9115,9 +9227,10 @@ if __name__ == "__main__":
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
-                                    price=execution_price,
                                     max_order_usd=(
-                                        TRUSTED_NO_EDGE_AUTO_BET_MAX_USD
+                                        SHARP_ENTRY_PROXY_MAX_USD
+                                        if bool(alert_g.get("sharp_entry_proxy_allowed", False))
+                                        else TRUSTED_NO_EDGE_AUTO_BET_MAX_USD
                                         if bool(alert_g.get("trusted_no_edge_auto_bet_allowed", False))
                                         else execution_max_order_usd
                                     ),
@@ -9125,6 +9238,8 @@ if __name__ == "__main__":
                                         "market_slug": execution_slug,
                                         "edge_percent": derived_edge_percent,
                                         "trusted_no_edge_auto_bet_allowed": bool(alert_g.get("trusted_no_edge_auto_bet_allowed", False)),
+                                        "sharp_entry_proxy_allowed": bool(alert_g.get("sharp_entry_proxy_allowed", False)),
+                                        "sharp_entry_proxy_chase_cents": alert_g.get("sharp_entry_proxy_chase_cents"),
                                         "since_last_buy_s": derived_since_last_buy_s,
                                         "market_phase": alert_g.get("market_phase"),
                                         "stake_percent": (

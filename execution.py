@@ -599,7 +599,11 @@ def validate_live_order_safety(price, signal_context=None):
         signal_context.get("trusted_no_edge_auto_bet_allowed", False)
     )
 
-    if edge_percent is None and not trusted_no_edge_auto_bet_allowed:
+    sharp_entry_proxy_allowed = bool(
+        signal_context.get("sharp_entry_proxy_allowed", False)
+    )
+
+    if edge_percent is None and not trusted_no_edge_auto_bet_allowed and not sharp_entry_proxy_allowed:
         return False, "missing_edge_percent"
 
     if edge_percent is not None:
@@ -608,7 +612,7 @@ def validate_live_order_safety(price, signal_context=None):
         except Exception:
             return False, f"invalid_edge_percent:{edge_percent}"
 
-        if edge_percent_decimal < LIVE_ORDER_MIN_EDGE_PERCENT:
+        if edge_percent_decimal < LIVE_ORDER_MIN_EDGE_PERCENT and not sharp_entry_proxy_allowed:
             return False, f"edge_below_min:{edge_percent_decimal}%"
 
     signal_age_seconds = signal_context.get("since_last_buy_s")
