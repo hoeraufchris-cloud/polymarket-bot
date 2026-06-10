@@ -9227,6 +9227,7 @@ if __name__ == "__main__":
                                 execution_preview = execute_order_safely(
                                     market_slug=execution_slug,
                                     outcome=execution_outcome,
+                                    price=execution_price,
                                     max_order_usd=(
                                         SHARP_ENTRY_PROXY_MAX_USD
                                         if bool(alert_g.get("sharp_entry_proxy_allowed", False))
