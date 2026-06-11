@@ -172,9 +172,6 @@ def convert_feed_slug_to_us_slug(market_slug):
     )
 
     moneyline_league_prefixes = (
-        "nba-",
-        "mlb-",
-        "wnba-",
         "atp-",
         "wta-",
     )
@@ -201,7 +198,7 @@ def convert_feed_slug_to_us_slug(market_slug):
         return "tsc-" + converted
 
     if converted.startswith(("nba-", "mlb-", "wnba-")):
-        return "aec-" + converted
+        return converted
 
     if converted.startswith(soccer_league_prefixes):
         return "atc-" + converted
@@ -210,7 +207,7 @@ def convert_feed_slug_to_us_slug(market_slug):
         return "aec-" + converted
 
     if converted.startswith(moneyline_league_prefixes):
-        return "aec-" + converted
+        return converted
 
     return converted
 
