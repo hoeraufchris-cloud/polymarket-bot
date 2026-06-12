@@ -718,9 +718,13 @@ def execute_order_safely(
     preview = None
     preview_error = None
     resolved_market_slug_used = None
+    preview_debug_failures = []
 
 
     for candidate_market_slug in candidate_market_slugs:
+        candidate_payload = None
+        candidate_request_payload = None
+
         try:
             candidate_payload = build_order_payload(
                 market_slug=candidate_market_slug,
@@ -748,10 +752,46 @@ def execute_order_safely(
 
         except Exception as e:
             preview_error = e
+
+            preview_debug_failure = {
+                "candidate_market_slug": candidate_market_slug,
+                "outcome": outcome,
+                "price": str(price),
+                "max_order_usd": str(effective_max_order_usd),
+                "payload": candidate_payload,
+                "error_type": type(e).__name__,
+                "error": str(e),
+            }
+
+            preview_debug_failures.append(preview_debug_failure)
+
+            print(
+                "[ORDER PREVIEW CANDIDATE FAILED] "
+                f"market={market_slug} "
+                f"candidate={candidate_market_slug} "
+                f"outcome={str(outcome).strip().lower()} "
+                f"price={price} "
+                f"max_order_usd={effective_max_order_usd} "
+                f"error_type={type(e).__name__} "
+                f"error={e} "
+                f"payload={candidate_payload}",
+                flush=True,
+            )
+
             continue
 
 
     if preview is None:
+        print(
+            "[ORDER PREVIEW ALL CANDIDATES FAILED] "
+            f"market={market_slug} "
+            f"outcome={str(outcome).strip().lower()} "
+            f"price={price} "
+            f"candidates={candidate_market_slugs} "
+            f"failures={preview_debug_failures}",
+            flush=True,
+        )
+
         raise preview_error or RuntimeError(
             f"Order preview failed for all candidate slugs: {candidate_market_slugs}"
         )
