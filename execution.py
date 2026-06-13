@@ -512,7 +512,22 @@ def build_order_payload(
     order_usd = Decimal(str(max_order_usd)) if max_order_usd is not None else DEFAULT_MAX_ORDER_USD
     quantity = calculate_quantity(order_usd, normalized_price)
     resolved_market_slug = convert_feed_slug_to_us_slug(market_slug)
-    intent = map_outcome_to_order_intent(outcome, resolved_market_slug)
+
+    try:
+        intent = map_outcome_to_order_intent(outcome, resolved_market_slug)
+    except Exception as e:
+        print(
+            "[ORDER INTENT MAP FAILED] "
+            f"input_market={market_slug} "
+            f"resolved_market={resolved_market_slug} "
+            f"outcome={str(outcome).strip().lower()} "
+            f"price={price} "
+            f"quantity={quantity} "
+            f"error_type={type(e).__name__} "
+            f"error={e}",
+            flush=True,
+        )
+        raise
 
     if quantity <= 0:
         raise ValueError(
