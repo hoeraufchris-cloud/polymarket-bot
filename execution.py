@@ -77,8 +77,148 @@ def calculate_quantity(max_order_usd, price):
     return int(quantity)
 
 
+EXECUTION_TEAM_ALIASES = {
+    "ari": ["ari", "arizona", "diamondbacks", "arizona diamondbacks"],
+    "ath": ["ath", "oak", "athletics", "oakland athletics"],
+    "atl": ["atl", "atlanta", "braves", "atlanta braves", "dream", "atlanta dream"],
+    "bal": ["bal", "baltimore", "orioles", "baltimore orioles"],
+    "bos": ["bos", "boston", "red sox", "boston red sox", "celtics", "boston celtics"],
+    "chc": ["chc", "cubs", "chicago cubs"],
+    "cin": ["cin", "cincinnati", "reds", "cincinnati reds"],
+    "cle": ["cle", "cleveland", "guardians", "cleveland guardians"],
+    "col": ["col", "colorado", "rockies", "colorado rockies"],
+    "conn": ["conn", "connecticut", "sun", "connecticut sun"],
+    "dal": ["dal", "dallas", "wings", "dallas wings", "mavericks", "dallas mavericks"],
+    "det": ["det", "detroit", "tigers", "detroit tigers"],
+    "gsv": ["gsv", "golden state", "valkyries", "golden state valkyries"],
+    "hou": ["hou", "houston", "astros", "houston astros", "rockets", "houston rockets"],
+    "ind": ["ind", "indiana", "fever", "indiana fever", "pacers", "indiana pacers"],
+    "kc": ["kc", "kansas city", "royals", "kansas city royals"],
+    "la": ["la", "los angeles", "sparks", "los angeles sparks", "dodgers", "los angeles dodgers"],
+    "laa": ["laa", "angels", "los angeles angels"],
+    "lad": ["lad", "dodgers", "los angeles dodgers"],
+    "mia": ["mia", "miami", "marlins", "miami marlins", "heat", "miami heat"],
+    "mil": ["mil", "milwaukee", "brewers", "milwaukee brewers", "bucks", "milwaukee bucks"],
+    "min": ["min", "minnesota", "twins", "minnesota twins", "lynx", "minnesota lynx", "timberwolves", "minnesota timberwolves"],
+    "nyk": ["nyk", "new york", "knicks", "new york knicks"],
+    "nym": ["nym", "mets", "new york mets"],
+    "nyy": ["nyy", "yankees", "new york yankees"],
+    "phx": ["phx", "phoenix", "mercury", "phoenix mercury", "suns", "phoenix suns"],
+    "pit": ["pit", "pittsburgh", "pirates", "pittsburgh pirates"],
+    "por": ["por", "portland", "fire", "portland fire", "portlandfire", "trail blazers", "portland trail blazers"],
+    "sa": ["sa", "sas", "san antonio", "spurs", "san antonio spurs"],
+    "sd": ["sd", "san diego", "padres", "san diego padres"],
+    "sea": ["sea", "seattle", "mariners", "seattle mariners", "storm", "seattle storm"],
+    "sf": ["sf", "san francisco", "giants", "san francisco giants"],
+    "stl": ["stl", "st louis", "st. louis", "cardinals", "st louis cardinals", "st. louis cardinals"],
+    "tb": ["tb", "tampa bay", "rays", "tampa bay rays"],
+    "tex": ["tex", "texas", "rangers", "texas rangers"],
+    "tor": ["tor", "toronto", "blue jays", "toronto blue jays", "tempo", "toronto tempo"],
+    "wsh": ["wsh", "washington", "nationals", "washington nationals", "mystics", "washington mystics"],
+}
+
+
+def normalize_execution_text(value):
+    return (
+        str(value or "")
+        .strip()
+        .lower()
+        .replace(".", "")
+        .replace("-", " ")
+        .replace("_", " ")
+    )
+
+
+def execution_slug_parts_for_side_mapping(market_slug):
+    slug = str(market_slug or "").strip().lower()
+
+    for prefix in ("aec-", "tsc-", "atc-", "asc-"):
+        if slug.startswith(prefix):
+            slug = slug[len(prefix):]
+            break
+
+    parts = slug.split("-")
+
+    if len(parts) < 6:
+        return None, None
+
+    league = parts[0]
+
+    date_index = None
+    for i in range(1, len(parts) - 2):
+        if (
+            len(parts[i]) == 4
+            and parts[i].isdigit()
+            and len(parts[i + 1]) == 2
+            and parts[i + 1].isdigit()
+            and len(parts[i + 2]) == 2
+            and parts[i + 2].isdigit()
+        ):
+            date_index = i
+            break
+
+    if date_index is None or date_index < 3:
+        return None, None
+
+    participant_parts = parts[1:date_index]
+
+    if len(participant_parts) != 2:
+        return None, None
+
+    return league, participant_parts
+
+
+def outcome_matches_slug_side(outcome_clean, side_token):
+    side_token_clean = normalize_execution_text(side_token)
+
+    possible_values = set(EXECUTION_TEAM_ALIASES.get(side_token_clean, []))
+    possible_values.add(side_token_clean)
+
+    for value in possible_values:
+        value_clean = normalize_execution_text(value)
+
+        if not value_clean:
+            continue
+
+        if outcome_clean == value_clean:
+            return True
+
+        if value_clean in outcome_clean.split():
+            return True
+
+        if value_clean in outcome_clean and len(value_clean) >= 4:
+            return True
+
+        if side_token_clean in outcome_clean and len(side_token_clean) >= 4:
+            return True
+
+    return False
+
+
+def infer_order_intent_from_slug(outcome, market_slug):
+    outcome_clean = normalize_execution_text(outcome)
+    league, participant_parts = execution_slug_parts_for_side_mapping(market_slug)
+
+    if not league or not participant_parts:
+        return None
+
+    side_a = participant_parts[0]
+    side_b = participant_parts[1]
+
+    side_a_match = outcome_matches_slug_side(outcome_clean, side_a)
+    side_b_match = outcome_matches_slug_side(outcome_clean, side_b)
+
+    if side_a_match and not side_b_match:
+        return "ORDER_INTENT_BUY_LONG"
+
+    if side_b_match and not side_a_match:
+        return "ORDER_INTENT_BUY_SHORT"
+
+    return None
+
+
 def map_outcome_to_order_intent(outcome, market_slug=None):
-    outcome_clean = str(outcome).strip().lower()
+    outcome_clean = normalize_execution_text(outcome)
 
     if outcome_clean in {"yes", "long", "over"}:
         return "ORDER_INTENT_BUY_LONG"
@@ -87,6 +227,19 @@ def map_outcome_to_order_intent(outcome, market_slug=None):
         return "ORDER_INTENT_BUY_SHORT"
 
     if market_slug:
+        inferred_intent = infer_order_intent_from_slug(outcome, market_slug)
+
+        if inferred_intent:
+            print(
+                "[ORDER INTENT INFERRED FROM SLUG] "
+                f"market={market_slug} "
+                f"outcome={outcome_clean} "
+                f"intent={inferred_intent}",
+                flush=True,
+            )
+
+            return inferred_intent
+
         client = get_polymarket_client()
         market_response = client.markets.retrieve_by_slug(market_slug)
         market = market_response.get("market", market_response)
@@ -106,7 +259,7 @@ def map_outcome_to_order_intent(outcome, market_slug=None):
             ])
 
             normalized_values = {
-                str(value or "").strip().lower()
+                normalize_execution_text(value)
                 for value in side_values
                 if value
             }
