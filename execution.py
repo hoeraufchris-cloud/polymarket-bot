@@ -367,11 +367,16 @@ def convert_feed_slug_to_us_slug(market_slug):
 def build_execution_slug_candidates(market_slug):
     slug = str(market_slug or "").strip().lower()
 
+
     if not slug:
         return []
 
 
+
+
     candidates = []
+
+
 
 
     def add_candidate(candidate):
@@ -380,7 +385,27 @@ def build_execution_slug_candidates(market_slug):
             candidates.append(candidate)
 
 
-    add_candidate(convert_feed_slug_to_us_slug(slug))
+
+
+    converted_slug = convert_feed_slug_to_us_slug(slug)
+    add_candidate(converted_slug)
+
+
+
+
+    tennis_raw_slug = slug
+    for prefix in ("aec-",):
+        if tennis_raw_slug.startswith(prefix):
+            tennis_raw_slug = tennis_raw_slug[len(prefix):]
+            break
+
+
+    if tennis_raw_slug.startswith(("atp-", "wta-", "j100-", "j1100-", "j2100-")):
+        add_candidate(tennis_raw_slug)
+        add_candidate("aec-" + tennis_raw_slug)
+        return candidates
+
+
 
 
     parts = slug.split("-")
@@ -388,7 +413,11 @@ def build_execution_slug_candidates(market_slug):
         return candidates
 
 
+
+
     league = parts[0]
+
+
 
 
     date_index = None
@@ -405,16 +434,24 @@ def build_execution_slug_candidates(market_slug):
             break
 
 
+
+
     if date_index is None:
         return candidates
+
+
 
 
     if date_index < 3:
         return candidates
 
 
+
+
     if league not in {"nba", "mlb", "wnba"}:
         return candidates
+
+
 
 
     team_parts = parts[1:date_index]
@@ -422,19 +459,29 @@ def build_execution_slug_candidates(market_slug):
     suffix_parts = parts[date_index + 3:]
 
 
+
+
     if len(team_parts) != 2:
         return candidates
+
+
 
 
     team_a = team_parts[0]
     team_b = team_parts[1]
 
 
+
+
     reversed_feed_slug_parts = [league, team_b, team_a] + date_parts + suffix_parts
     reversed_feed_slug = "-".join(reversed_feed_slug_parts)
 
 
+
+
     add_candidate(convert_feed_slug_to_us_slug(reversed_feed_slug))
+
+
 
 
     return candidates
