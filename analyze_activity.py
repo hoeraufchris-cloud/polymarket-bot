@@ -8097,14 +8097,20 @@ def send_pushover_bet_alert(g):
     outcome_text = str(g.get("outcome", "") or "").strip()
     stake_pct = g.get("stake_pct")
     current_price = g.get("current_price")
-    entry_price = g.get("wallet_entry_price")
+    entry_price = (
+        g.get("wallet_entry_price")
+        if g.get("wallet_entry_price") is not None
+        else g.get("avg_trade_price")
+    )
     edge_pct = g.get("edge_pct")
     last_secs = g.get("seconds_since_last_buy")
     total_size_bought = g.get("total_size")
     size_ratio = g.get("size_ratio")
 
     current_price_str = "N/A"
+    current_price_pct_str = "N/A"
     entry_price_str = "N/A"
+    entry_price_pct_str = "N/A"
 
     try:
         p = float(current_price)
@@ -8115,6 +8121,7 @@ def send_pushover_bet_alert(g):
                 odds = ((1 - p) / p) * 100
             odds = int(round(odds))
             current_price_str = f"+{odds}" if odds > 0 else f"{odds}"
+            current_price_pct_str = f"{round(p * 100, 1)}%".replace(".0%", "%")
     except Exception:
         pass
 
@@ -8127,6 +8134,7 @@ def send_pushover_bet_alert(g):
                 entry_odds = ((1 - ep) / ep) * 100
             entry_odds = int(round(entry_odds))
             entry_price_str = f"+{entry_odds}" if entry_odds > 0 else f"{entry_odds}"
+            entry_price_pct_str = f"{round(ep * 100, 1)}%".replace(".0%", "%")
     except Exception:
         pass
     title = f"[{INSTANCE_LABEL}] BET ALERT"
@@ -8399,7 +8407,7 @@ def send_pushover_bet_alert(g):
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-            f"Current Price: {current_price_str} | Entry Price: {entry_price_str}\n"
+            f"Current Price: {current_price_str}/{current_price_pct_str} | Entry Price: {entry_price_str}/{entry_price_pct_str}\n"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
