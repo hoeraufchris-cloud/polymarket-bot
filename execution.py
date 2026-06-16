@@ -357,7 +357,7 @@ def convert_feed_slug_to_us_slug(market_slug):
         return "atc-" + converted
 
     if converted.startswith(tennis_league_prefixes):
-        return "aec-" + converted
+        return converted
 
     if converted.startswith(moneyline_league_prefixes):
         return converted
@@ -541,12 +541,20 @@ def is_live_order_whitelisted_market(market_slug):
     resolved_slug = convert_feed_slug_to_us_slug(slug)
 
     supported_live_prefixes = (
+        "nba-",
+        "mlb-",
+        "wnba-",
         "aec-nba-",
         "aec-mlb-",
         "aec-wnba-",
         "tsc-nba-",
         "tsc-mlb-",
         "tsc-wnba-",
+        "atp-",
+        "wta-",
+        "j100-",
+        "j1100-",
+        "j2100-",
         "aec-atp-",
         "aec-wta-",
         "aec-j100-",
