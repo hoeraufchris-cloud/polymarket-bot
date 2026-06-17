@@ -96,6 +96,48 @@ def log_polymarket_markets_methods_once(client):
         )
 
         try:
+            from polymarket_us.types.markets import MarketsListParams
+
+            params_signature = None
+            params_annotations = None
+            params_attrs = None
+
+            try:
+                params_signature = str(inspect.signature(MarketsListParams))
+            except Exception as signature_error:
+                params_signature = f"signature_error:{signature_error}"
+
+            try:
+                params_annotations = getattr(MarketsListParams, "__annotations__", None)
+            except Exception as annotations_error:
+                params_annotations = f"annotations_error:{annotations_error}"
+
+            try:
+                params_attrs = [
+                    name
+                    for name in dir(MarketsListParams)
+                    if not name.startswith("_")
+                ]
+            except Exception as attrs_error:
+                params_attrs = f"attrs_error:{attrs_error}"
+
+            print(
+                "[POLYMARKET CLIENT MARKETS LIST PARAMS] "
+                f"signature={params_signature} "
+                f"annotations={params_annotations} "
+                f"attrs={params_attrs}",
+                flush=True,
+            )
+
+        except Exception as params_error:
+            print(
+                "[POLYMARKET CLIENT MARKETS LIST PARAMS FAILED] "
+                f"error_type={type(params_error).__name__} "
+                f"error={params_error}",
+                flush=True,
+            )
+
+        try:
             markets_response = markets_obj.list()
             response_type = type(markets_response).__name__
             response_attrs = [
@@ -104,13 +146,22 @@ def log_polymarket_markets_methods_once(client):
                 if not name.startswith("_")
             ]
 
+            response_keys = None
             market_rows = None
 
             if isinstance(markets_response, dict):
+                response_keys = list(markets_response.keys())
+
                 for key in ("markets", "data", "items", "results"):
                     if isinstance(markets_response.get(key), list):
                         market_rows = markets_response.get(key)
                         break
+
+                if market_rows is None:
+                    for value in markets_response.values():
+                        if isinstance(value, list):
+                            market_rows = value
+                            break
             else:
                 for attr in ("markets", "data", "items", "results"):
                     value = getattr(markets_response, attr, None)
@@ -145,6 +196,7 @@ def log_polymarket_markets_methods_once(client):
                 "[POLYMARKET CLIENT MARKETS LIST SAMPLE] "
                 f"response_type={response_type} "
                 f"response_attrs={response_attrs} "
+                f"response_keys={response_keys} "
                 f"sample_markets={sample_markets}",
                 flush=True,
             )
