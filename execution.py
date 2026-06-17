@@ -56,6 +56,40 @@ def get_polymarket_client():
     )
 
 
+_POLYMARKET_MARKETS_METHODS_LOGGED = False
+
+
+def log_polymarket_markets_methods_once(client):
+    global _POLYMARKET_MARKETS_METHODS_LOGGED
+
+    if _POLYMARKET_MARKETS_METHODS_LOGGED:
+        return
+
+    _POLYMARKET_MARKETS_METHODS_LOGGED = True
+
+    try:
+        markets_obj = getattr(client, "markets", None)
+        methods = [
+            name
+            for name in dir(markets_obj)
+            if not name.startswith("_")
+        ] if markets_obj is not None else []
+
+        print(
+            "[POLYMARKET CLIENT MARKETS METHODS] "
+            f"methods={methods}",
+            flush=True,
+        )
+
+    except Exception as e:
+        print(
+            "[POLYMARKET CLIENT MARKETS METHODS FAILED] "
+            f"error_type={type(e).__name__} "
+            f"error={e}",
+            flush=True,
+        )
+
+
 def normalize_price(price):
     price_decimal = Decimal(str(price))
 
@@ -891,6 +925,7 @@ def execute_order_safely(
     signal_context=None,
 ):
     client = get_polymarket_client()
+    log_polymarket_markets_methods_once(client)
     signal_context = signal_context or {}
 
 
