@@ -95,6 +95,68 @@ def log_polymarket_markets_methods_once(client):
             flush=True,
         )
 
+        try:
+            markets_response = markets_obj.list()
+            response_type = type(markets_response).__name__
+            response_attrs = [
+                name
+                for name in dir(markets_response)
+                if not name.startswith("_")
+            ]
+
+            market_rows = None
+
+            if isinstance(markets_response, dict):
+                for key in ("markets", "data", "items", "results"):
+                    if isinstance(markets_response.get(key), list):
+                        market_rows = markets_response.get(key)
+                        break
+            else:
+                for attr in ("markets", "data", "items", "results"):
+                    value = getattr(markets_response, attr, None)
+                    if isinstance(value, list):
+                        market_rows = value
+                        break
+
+            sample_markets = []
+
+            if market_rows:
+                for market in market_rows[:10]:
+                    if isinstance(market, dict):
+                        sample_markets.append({
+                            "id": market.get("id"),
+                            "slug": market.get("slug"),
+                            "title": market.get("title") or market.get("question") or market.get("name"),
+                            "status": market.get("status"),
+                        })
+                    else:
+                        sample_markets.append({
+                            "id": getattr(market, "id", None),
+                            "slug": getattr(market, "slug", None),
+                            "title": (
+                                getattr(market, "title", None)
+                                or getattr(market, "question", None)
+                                or getattr(market, "name", None)
+                            ),
+                            "status": getattr(market, "status", None),
+                        })
+
+            print(
+                "[POLYMARKET CLIENT MARKETS LIST SAMPLE] "
+                f"response_type={response_type} "
+                f"response_attrs={response_attrs} "
+                f"sample_markets={sample_markets}",
+                flush=True,
+            )
+
+        except Exception as list_error:
+            print(
+                "[POLYMARKET CLIENT MARKETS LIST SAMPLE FAILED] "
+                f"error_type={type(list_error).__name__} "
+                f"error={list_error}",
+                flush=True,
+            )
+
     except Exception as e:
         print(
             "[POLYMARKET CLIENT MARKETS METHODS FAILED] "
