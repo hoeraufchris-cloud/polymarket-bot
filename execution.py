@@ -68,6 +68,8 @@ def log_polymarket_markets_methods_once(client):
     _POLYMARKET_MARKETS_METHODS_LOGGED = True
 
     try:
+        import inspect
+
         markets_obj = getattr(client, "markets", None)
         methods = [
             name
@@ -75,9 +77,21 @@ def log_polymarket_markets_methods_once(client):
             if not name.startswith("_")
         ] if markets_obj is not None else []
 
+        method_signatures = {}
+
+        for method_name in methods:
+            method = getattr(markets_obj, method_name, None)
+
+            if callable(method):
+                try:
+                    method_signatures[method_name] = str(inspect.signature(method))
+                except Exception as signature_error:
+                    method_signatures[method_name] = f"signature_error:{signature_error}"
+
         print(
             "[POLYMARKET CLIENT MARKETS METHODS] "
-            f"methods={methods}",
+            f"methods={methods} "
+            f"signatures={method_signatures}",
             flush=True,
         )
 
