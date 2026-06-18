@@ -138,6 +138,72 @@ def log_polymarket_markets_methods_once(client):
             )
 
         try:
+            active_sample_params = {
+                "active": True,
+                "closed": False,
+                "limit": 25,
+                "offset": 0,
+            }
+
+            active_markets_response = markets_obj.list(active_sample_params)
+
+            active_market_rows = None
+
+            if isinstance(active_markets_response, dict):
+                for key in ("markets", "data", "items", "results"):
+                    if isinstance(active_markets_response.get(key), list):
+                        active_market_rows = active_markets_response.get(key)
+                        break
+
+                if active_market_rows is None:
+                    for value in active_markets_response.values():
+                        if isinstance(value, list):
+                            active_market_rows = value
+                            break
+
+            active_sample_markets = []
+
+            if active_market_rows:
+                for market in active_market_rows[:25]:
+                    if isinstance(market, dict):
+                        active_sample_markets.append({
+                            "id": market.get("id"),
+                            "slug": market.get("slug"),
+                            "title": market.get("title") or market.get("question") or market.get("name"),
+                            "active": market.get("active"),
+                            "closed": market.get("closed"),
+                            "category": market.get("category") or market.get("categories"),
+                        })
+                    else:
+                        active_sample_markets.append({
+                            "id": getattr(market, "id", None),
+                            "slug": getattr(market, "slug", None),
+                            "title": (
+                                getattr(market, "title", None)
+                                or getattr(market, "question", None)
+                                or getattr(market, "name", None)
+                            ),
+                            "active": getattr(market, "active", None),
+                            "closed": getattr(market, "closed", None),
+                            "category": getattr(market, "category", None) or getattr(market, "categories", None),
+                        })
+
+            print(
+                "[POLYMARKET CLIENT ACTIVE MARKETS LIST SAMPLE] "
+                f"params={active_sample_params} "
+                f"sample_markets={active_sample_markets}",
+                flush=True,
+            )
+
+        except Exception as active_list_error:
+            print(
+                "[POLYMARKET CLIENT ACTIVE MARKETS LIST SAMPLE FAILED] "
+                f"error_type={type(active_list_error).__name__} "
+                f"error={active_list_error}",
+                flush=True,
+            )
+
+        try:
             markets_response = markets_obj.list()
             response_type = type(markets_response).__name__
             response_attrs = [
