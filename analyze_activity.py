@@ -3956,7 +3956,7 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
                     f"{old_reason} | Upgraded by leader-first single-wallet rule "
                     f"(role={self_role}, confirmations={confirmation_count}, "
                     f"size_ratio={round(size_ratio, 2)}, "
-                    f"edge={round(edge_pct, 2)}%, "
+                    f"drift={round(float(g.get('market_movement_cents', 0) or 0), 2)}c, "
                     f"age={seconds_since_last_buy}s)"
                 )
                 consensus_debug["upgraded_to_bet"] += 1
@@ -4141,8 +4141,8 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
             f"weighted_score={consensus.get('weighted_wallet_score_scored', 0)}, "
             f"consensus_score={consensus_score}, "
             f"quality_contributors={quality_contributor_count}, "
-            f"min_edge={dynamic_min_edge_pct}, "
-            f"actual_edge={edge_pct})"
+            f"min_drift={dynamic_min_edge_pct}, "
+            f"actual_drift={round(float(g.get('market_movement_cents', 0) or 0), 2)}c)"
         )
 
         consensus_debug["upgraded_to_bet"] += 1
