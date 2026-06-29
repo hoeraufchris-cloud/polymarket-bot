@@ -733,13 +733,17 @@ def apply_sharp_entry_proxy_edge(g):
     if score < SHARP_ENTRY_PROXY_MIN_SCORE:
         return g
 
-    missing_edge_block = (
+    missing_entry_block = (
         bool(g.get("manual_review_missing_fair_price", False))
-        or str(g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge"
+        or str(g.get("auto_bet_block_reason", "") or "") in {
+            "missing_fair_price_or_edge",
+            "missing_sharp_entry_price",
+        }
         or "missing fair price / edge" in str(g.get("reason", "") or "").lower()
+        or "missing sharp entry price" in str(g.get("reason", "") or "").lower()
     )
 
-    if not missing_edge_block:
+    if not missing_entry_block:
         return g
 
     sharp_entry_price = (
@@ -759,34 +763,36 @@ def apply_sharp_entry_proxy_edge(g):
     if sharp_entry_price <= 0 or current_price <= 0:
         return g
 
-    chase_cents = round((current_price - sharp_entry_price) * 100, 2)
+    drift_cents = round((current_price - sharp_entry_price) * 100, 2)
 
-    if chase_cents > SHARP_ENTRY_PROXY_MAX_CHASE_CENTS:
+    if drift_cents > SHARP_ENTRY_PROXY_MAX_CHASE_CENTS:
         return g
 
     try:
-        market_movement_cents = float(g.get("market_movement_cents", chase_cents) or chase_cents)
+        market_movement_cents = float(g.get("market_movement_cents", drift_cents) or drift_cents)
     except Exception:
-        market_movement_cents = chase_cents
+        market_movement_cents = drift_cents
 
     if market_movement_cents > SHARP_ENTRY_PROXY_MAX_CHASE_CENTS:
         return g
 
     g["sharp_entry_proxy_allowed"] = True
     g["sharp_entry_proxy_price"] = sharp_entry_price
-    g["sharp_entry_proxy_chase_cents"] = chase_cents
+    g["sharp_entry_proxy_drift_cents"] = drift_cents
+    g["sharp_entry_proxy_chase_cents"] = drift_cents
+    g["sharp_entry_price"] = sharp_entry_price
+    g["wallet_entry_price"] = sharp_entry_price
     g["fair_price"] = sharp_entry_price
-    g["edge_percent"] = (
-        (sharp_entry_price - current_price)
-        / current_price
-    ) * 100
+
+    # Backward-compatible execution field only. Do not treat this as true edge.
+    g["edge_percent"] = 0.0
 
     g["auto_bet_blocked"] = False
     g["auto_bet_block_reason"] = None
 
     return g
 
-def is_trusted_no_edge_auto_bet_allowed(g):
+def is_trusted_drift_auto_bet_allowed(g):
     if not TRUSTED_NO_EDGE_AUTO_BET_ENABLED:
         return False
 
@@ -796,13 +802,17 @@ def is_trusted_no_edge_auto_bet_allowed(g):
     if not bool(g.get("wallet_guardrail_trusted", False)):
         return False
 
-    missing_edge_block = (
+    missing_entry_block = (
         bool(g.get("manual_review_missing_fair_price", False))
-        or str(g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge"
+        or str(g.get("auto_bet_block_reason", "") or "") in {
+            "missing_fair_price_or_edge",
+            "missing_sharp_entry_price",
+        }
         or "missing fair price / edge" in str(g.get("reason", "") or "").lower()
+        or "missing sharp entry price" in str(g.get("reason", "") or "").lower()
     )
 
-    if not missing_edge_block:
+    if not missing_entry_block:
         return False
 
     if str(g.get("label", "") or "").upper() != "BET":
@@ -2878,6 +2888,15 @@ def attach_position_data_and_score(
         gamma_meta = fetch_gamma_market_metadata(g["slug"], g["outcome"])
         g["event_start_time"] = gamma_meta.get("event_start_time")
 
+        wallet_entry_price = avg_trade_price
+        g["wallet_entry_price"] = round(wallet_entry_price, 4) if wallet_entry_price else None
+        g["sharp_entry_price"] = round(wallet_entry_price, 4) if wallet_entry_price else None
+
+        # Backward-compatible field only. We are no longer treating this as true fair value.
+        g["fair_price"] = round(wallet_entry_price, 4) if wallet_entry_price else None
+        g["fair_american_odds"] = price_to_american_odds(wallet_entry_price) if wallet_entry_price else None
+        g["edge_pct"] = 0.0
+
         if not pos:
             gamma_price = gamma_meta.get("price")
             g["current_price"] = gamma_price
@@ -2891,35 +2910,16 @@ def attach_position_data_and_score(
                 scored.append(g)
                 continue
 
-            market_movement_cents = round((gamma_price - avg_trade_price) * 100, 2)
+            current_price = float(gamma_price)
+            market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
             g["market_movement_cents"] = market_movement_cents
 
         else:
             current_price = float(pos.get("curPrice", 0) or 0)
             g["current_price"] = current_price
 
-            fair_price = fair_price_lookup.get((g["slug"], g["outcome"]))
-            if fair_price is None:
-                fair_price = avg_trade_price
-
-            g["fair_price"] = round(fair_price, 4)
-            fair_american_odds = price_to_american_odds(fair_price)
-            g["fair_american_odds"] = fair_american_odds
-
-            wallet_entry_price = avg_trade_price
-            g["wallet_entry_price"] = round(wallet_entry_price, 4)
-
             market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
             g["market_movement_cents"] = market_movement_cents
-
-            edge_pct = 0.0
-            try:
-                if current_price and fair_price and float(current_price) > 0:
-                    edge_pct = ((float(fair_price) / float(current_price)) - 1.0) * 100.0
-            except Exception:
-                edge_pct = 0.0
-
-            g["edge_pct"] = round(edge_pct, 2)
 
        # --- DYNAMIC price drift filter: must run after current_price/market movement are set ---
         current_price_value = float(g.get("current_price", 0) or 0)
@@ -3376,7 +3376,7 @@ def attach_position_data_and_score(
         else:
             price_cap_pct = 110
 
-        # --- softer edge cap ---
+        # --- legacy drift/price cap ---
         if edge_pct_for_stake <= -2.0:
             edge_cap_pct = 80
         elif edge_pct_for_stake < 0:
@@ -3405,7 +3405,7 @@ def attach_position_data_and_score(
             f", notional bump={total_notional_bump_pct}%"
             f", raw={raw_stake_pct}%"
             f", price cap={price_cap_pct}%"
-            f", edge cap={edge_cap_pct}%"
+            f", drift cap={edge_cap_pct}%"
             f", final={g['stake_pct']}%"
         )
 
@@ -3417,10 +3417,28 @@ def attach_position_data_and_score(
             market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
             age_bucket = str(g.get("age_bucket", "") or "").lower()
             consensus_upgrade = bool(g.get("consensus_upgrade", False))
-            fair_price = g.get("fair_price")
-            edge_pct = g.get("edge_pct")
-            wallet_entry_price = g.get("wallet_entry_price")
+            wallet_entry_price = (
+                g.get("wallet_entry_price")
+                if g.get("wallet_entry_price") is not None
+                else g.get("avg_trade_price")
+            )
             current_price = float(g.get("current_price", 0) or 0)
+
+            if wallet_entry_price is not None:
+                try:
+                    wallet_entry_price = float(wallet_entry_price)
+                    g["wallet_entry_price"] = round(wallet_entry_price, 4)
+                    g["sharp_entry_price"] = round(wallet_entry_price, 4)
+
+                    if current_price:
+                        g["market_movement_cents"] = round(
+                            (current_price - wallet_entry_price) * 100,
+                            2,
+                        )
+                except Exception:
+                    wallet_entry_price = None
+
+            edge_pct = 0.0
 
             clv_key = make_clv_key(
                 g.get("slug", ""),
@@ -3482,17 +3500,16 @@ def attach_position_data_and_score(
                     f"(confirmations={confirmation_count}, accumulation={accumulation_points}, size_ratio={round(size_ratio, 2)})"
                 )
 
-            elif fair_price is None or edge_pct is None or wallet_entry_price is None:
-                g["manual_review_missing_fair_price"] = True
+            elif wallet_entry_price is None:
+                g["label"] = "PASS"
+                g["score"] = 0
+                g["stake_pct"] = 0
                 g["auto_bet_blocked"] = True
-                g["auto_bet_block_reason"] = "missing_fair_price_or_edge"
-                g["reason"] = (
-                    f"{g.get('reason', '')} | "
-                    "Manual review only: missing fair price / edge data"
-                ).strip(" |")
+                g["auto_bet_block_reason"] = "missing_sharp_entry_price"
+                g["reason"] = "Final filter: missing sharp entry price"
 
             else:
-                edge_pct = float(edge_pct or 0)
+                edge_pct = 0.0
 
                 max_bet_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
 
@@ -6445,7 +6462,7 @@ def should_send_bet_alert(g, alerted_bets, now_ts, wallet_profiles):
 
     if score_improved and edge_improved:
         actionable_reasons.append(
-            f"stronger score/edge ({old_score}/{old_edge_pct:.2f}% -> {new_score}/{new_edge_pct:.2f}%)"
+            f"stronger score/drift profile ({old_score}/{old_edge_pct:.2f} -> {new_score}/{new_edge_pct:.2f})"
         )
 
     if not actionable_reasons:
@@ -8483,9 +8500,13 @@ def print_signal(g):
     current_price = g.get("current_price")
     american_odds = price_to_american_odds(current_price)
 
-    fair_price = g.get("fair_price")
-    fair_american_odds = g.get("fair_american_odds")
-    edge_pct = g.get("edge_pct")
+    sharp_entry_price = (
+        g.get("wallet_entry_price")
+        if g.get("wallet_entry_price") is not None
+        else g.get("avg_trade_price")
+    )
+    sharp_entry_odds = price_to_american_odds(sharp_entry_price)
+    drift_cents = g.get("market_movement_cents")
 
     market_phase = g.get("market_phase")
     event_start = g.get("event_start_time")
@@ -8504,21 +8525,18 @@ def print_signal(g):
         odds_str = "N/A"
         print(f"American odds:       N/A")
 
-    print(f"Fair price:          {fair_price}")
+    print(f"Sharp entry price:   {sharp_entry_price}")
 
-    if fair_american_odds is not None:
-        if fair_american_odds > 0:
-            fair_odds_str = f"+{fair_american_odds}"
+    if sharp_entry_odds is not None:
+        if sharp_entry_odds > 0:
+            sharp_entry_odds_str = f"+{sharp_entry_odds}"
         else:
-            fair_odds_str = f"{fair_american_odds}"
-        print(f"Fair odds:           {fair_odds_str}")
+            sharp_entry_odds_str = f"{sharp_entry_odds}"
+        print(f"Sharp entry odds:    {sharp_entry_odds_str}")
     else:
-        fair_odds_str = "N/A"
-        print(f"Fair odds:           N/A")
+        print(f"Sharp entry odds:    N/A")
 
-    print(f"Edge %:              {edge_pct}")
-    print(f"Wallet entry price:  {g.get('wallet_entry_price')}")
-    print(f"Market movement:     {g.get('market_movement_cents')} cents")
+    print(f"Drift from entry:    {drift_cents} cents")
     print(f"Time span (seconds): {g.get('seconds_span', 'N/A')}")
     print(f"Since last buy (s):  {g.get('seconds_since_last_buy', 'N/A')}")
     import datetime
@@ -9179,33 +9197,36 @@ if __name__ == "__main__":
 
                                 alert_g = apply_sharp_entry_proxy_edge(alert_g)
 
-                                trusted_no_edge_auto_bet_allowed = is_trusted_no_edge_auto_bet_allowed(alert_g)
+                                trusted_drift_auto_bet_allowed = is_trusted_drift_auto_bet_allowed(alert_g)
 
-                                if bool(alert_g.get("auto_bet_blocked", False)) and not trusted_no_edge_auto_bet_allowed:
-                                    if str(alert_g.get("auto_bet_block_reason", "") or "") == "missing_fair_price_or_edge":
+                                if bool(alert_g.get("auto_bet_blocked", False)) and not trusted_drift_auto_bet_allowed:
+                                    if str(alert_g.get("auto_bet_block_reason", "") or "") in {
+                                        "missing_fair_price_or_edge",
+                                        "missing_sharp_entry_price",
+                                    }:
                                         try:
-                                            no_edge_debug_score = float(alert_g.get("score", 0) or 0)
+                                            drift_debug_score = float(alert_g.get("score", 0) or 0)
                                         except Exception:
-                                            no_edge_debug_score = 0.0
+                                            drift_debug_score = 0.0
 
                                         try:
-                                            no_edge_debug_age = float(
+                                            drift_debug_age = float(
                                                 alert_g.get("since_last_buy_s")
                                                 or alert_g.get("since_last_buy_seconds")
                                                 or alert_g.get("age_seconds")
                                                 or 999999
                                             )
                                         except Exception:
-                                            no_edge_debug_age = 999999
+                                            drift_debug_age = 999999
 
                                         print(
-                                            "[TRUSTED NO EDGE CHECK FAILED] "
+                                            "[TRUSTED DRIFT CHECK FAILED] "
                                             f"market={execution_slug} "
                                             f"outcome={execution_outcome} "
                                             f"trusted={bool(alert_g.get('wallet_guardrail_trusted', False))} "
-                                            f"manual_missing={bool(alert_g.get('manual_review_missing_fair_price', False))} "
-                                            f"score={no_edge_debug_score} "
-                                            f"age={round(no_edge_debug_age, 1)} "
+                                            f"manual_missing_entry={bool(alert_g.get('manual_review_missing_fair_price', False))} "
+                                            f"score={drift_debug_score} "
+                                            f"age={round(drift_debug_age, 1)} "
                                             f"drift={alert_g.get('market_movement_cents')} "
                                             f"phase={alert_g.get('market_phase')} "
                                             f"reason={alert_g.get('auto_bet_block_reason')}"
@@ -9220,7 +9241,8 @@ if __name__ == "__main__":
                                     )
                                     continue
 
-                                if trusted_no_edge_auto_bet_allowed:
+                                if trusted_drift_auto_bet_allowed:
+                                    alert_g["trusted_drift_auto_bet_allowed"] = True
                                     alert_g["trusted_no_edge_auto_bet_allowed"] = True
                                     alert_g["auto_bet_blocked"] = False
                                     alert_g["auto_bet_block_reason"] = None
@@ -9246,6 +9268,7 @@ if __name__ == "__main__":
                                     signal_context={
                                         "market_slug": execution_slug,
                                         "edge_percent": derived_edge_percent,
+                                        "trusted_drift_auto_bet_allowed": bool(alert_g.get("trusted_drift_auto_bet_allowed", False)),
                                         "trusted_no_edge_auto_bet_allowed": bool(alert_g.get("trusted_no_edge_auto_bet_allowed", False)),
                                         "sharp_entry_proxy_allowed": bool(alert_g.get("sharp_entry_proxy_allowed", False)),
                                         "sharp_entry_proxy_chase_cents": alert_g.get("sharp_entry_proxy_chase_cents"),
