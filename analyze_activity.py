@@ -2916,17 +2916,26 @@ def attach_position_data_and_score(
 
         gamma_price = gamma_meta.get("price")
 
-        if gamma_price is not None:
-            current_price = float(gamma_price)
+        position_price = None
+        if pos:
+            try:
+                position_price = float(pos.get("curPrice", 0) or 0)
+                if not (0 < position_price < 1):
+                    position_price = None
+            except Exception:
+                position_price = None
+
+        if position_price is not None:
+            current_price = position_price
             g["current_price"] = current_price
-            g["current_price_source"] = "gamma"
+            g["current_price_source"] = "position_curPrice"
             market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
             g["market_movement_cents"] = market_movement_cents
 
-        elif pos:
-            current_price = float(pos.get("curPrice", 0) or 0)
+        elif gamma_price is not None:
+            current_price = float(gamma_price)
             g["current_price"] = current_price
-            g["current_price_source"] = "position_fallback"
+            g["current_price_source"] = "gamma_fallback"
             market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
             g["market_movement_cents"] = market_movement_cents
 
@@ -3450,6 +3459,17 @@ def attach_position_data_and_score(
                 last_buy_seconds = 999999
 
             is_live_for_freshness = str(g.get("market_phase", "") or "").lower() == "live"
+
+            if (
+                is_live_for_freshness
+                and str(g.get("current_price_source", "") or "").lower() == "gamma_fallback"
+            ):
+                g["label"] = "PASS"
+                g["score"] = 0
+                g["stake_pct"] = 0
+                g["reason"] = "Final filter: live signal blocked because current price source is gamma fallback"
+                scored.append(g)
+                continue
 
             if is_live_for_freshness:
                 max_last_buy_seconds = BET_ALERT_MAX_LIVE_LAST_BUY_SECONDS
@@ -8496,7 +8516,7 @@ def send_pushover_bet_alert(g):
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-            f"Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
+            f"Est Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
