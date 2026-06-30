@@ -74,7 +74,7 @@ def track_model_recommendation(recommendation, now_ts):
         "time_to_start_bucket": recommendation.get("time_to_start_bucket"),
         "market_phase": recommendation.get("market_phase"),
         "current_price_at_alert": recommendation.get("latest_current_price"),
-        "entry_price": recommendation.get("latest_current_price"),
+        "entry_price": recommendation.get("latest_wallet_entry_price"),
         "wallet_entry_price": recommendation.get("latest_wallet_entry_price"),
         "latest_edge_pct": recommendation.get("latest_edge_pct"),
         "unique_wallet_count": recommendation.get("unique_wallet_count"),
@@ -317,6 +317,11 @@ BET_ALERT_MAX_LIVE_CHASE_CENTS = 2.0
 BET_ALERT_HEAVY_CHASE_REJECT_CENTS = 6.0
 BET_ALERT_LIVE_MAX_FAVORABLE_DRIFT_CENTS = -8.0
 BET_ALERT_FINAL_MIN_EDGE_PERCENT = 0.0
+
+BET_ALERT_MAX_LIVE_LAST_BUY_SECONDS = 120
+BET_ALERT_MAX_PREGAME_LAST_BUY_SECONDS = 300
+BET_ALERT_MAX_CONFIRMED_PREGAME_LAST_BUY_SECONDS = 600
+BET_ALERT_MIN_CONFIRMED_STALE_BUYS = 3
 
 WALLET_GUARDRAILS_ENABLED = True
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 8
@@ -2610,12 +2615,23 @@ def compute_dynamic_wallet_weights(wallet_profiles):
 
 
 GAMMA_MARKET_CACHE = {}
+GAMMA_MARKET_CACHE_TTL_SECONDS = 5
+
+
 
 
 def fetch_gamma_market_metadata(slug, outcome):
     cache_key = (slug, outcome)
-    if cache_key in GAMMA_MARKET_CACHE:
-        return GAMMA_MARKET_CACHE[cache_key]
+    now_ts = time.time()
+
+    cached = GAMMA_MARKET_CACHE.get(cache_key)
+    if isinstance(cached, dict):
+        cached_ts = cached.get("_cached_ts")
+        try:
+            if cached_ts is not None and now_ts - float(cached_ts) <= GAMMA_MARKET_CACHE_TTL_SECONDS:
+                return cached
+        except Exception:
+            pass
 
     encoded_slug = urllib.parse.quote(slug, safe="")
     url = f"https://gamma-api.polymarket.com/markets?slug={encoded_slug}"
@@ -2709,6 +2725,7 @@ def fetch_gamma_market_metadata(slug, outcome):
     result = {
         "price": price,
         "event_start_time": event_start_time,
+        "_cached_ts": now_ts,
     }
     GAMMA_MARKET_CACHE[cache_key] = result
     return result
@@ -2897,29 +2914,32 @@ def attach_position_data_and_score(
         g["fair_american_odds"] = price_to_american_odds(wallet_entry_price) if wallet_entry_price else None
         g["edge_pct"] = 0.0
 
-        if not pos:
-            gamma_price = gamma_meta.get("price")
-            g["current_price"] = gamma_price
+        gamma_price = gamma_meta.get("price")
 
-            if gamma_price is None:
-                g["market_movement_cents"] = None
-                g["label"] = "WATCH"
-                g["score"] = 25
-                g["stake_pct"] = 0
-                g["reason"] = "No matching current position and no Gamma price found"
-                scored.append(g)
-                continue
-
+        if gamma_price is not None:
             current_price = float(gamma_price)
+            g["current_price"] = current_price
+            g["current_price_source"] = "gamma"
+            market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
+            g["market_movement_cents"] = market_movement_cents
+
+        elif pos:
+            current_price = float(pos.get("curPrice", 0) or 0)
+            g["current_price"] = current_price
+            g["current_price_source"] = "position_fallback"
             market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
             g["market_movement_cents"] = market_movement_cents
 
         else:
-            current_price = float(pos.get("curPrice", 0) or 0)
-            g["current_price"] = current_price
-
-            market_movement_cents = round((current_price - wallet_entry_price) * 100, 2)
-            g["market_movement_cents"] = market_movement_cents
+            g["current_price"] = None
+            g["current_price_source"] = "missing"
+            g["market_movement_cents"] = None
+            g["label"] = "WATCH"
+            g["score"] = 25
+            g["stake_pct"] = 0
+            g["reason"] = "No matching current position and no Gamma price found"
+            scored.append(g)
+            continue
 
        # --- DYNAMIC price drift filter: must run after current_price/market movement are set ---
         current_price_value = float(g.get("current_price", 0) or 0)
@@ -3424,6 +3444,51 @@ def attach_position_data_and_score(
             )
             current_price = float(g.get("current_price", 0) or 0)
 
+            try:
+                last_buy_seconds = int(g.get("seconds_since_last_buy", 999999) or 999999)
+            except Exception:
+                last_buy_seconds = 999999
+
+            is_live_for_freshness = str(g.get("market_phase", "") or "").lower() == "live"
+
+            if is_live_for_freshness:
+                max_last_buy_seconds = BET_ALERT_MAX_LIVE_LAST_BUY_SECONDS
+            elif confirmation_count >= BET_ALERT_MIN_CONFIRMED_STALE_BUYS:
+                max_last_buy_seconds = BET_ALERT_MAX_CONFIRMED_PREGAME_LAST_BUY_SECONDS
+            else:
+                max_last_buy_seconds = BET_ALERT_MAX_PREGAME_LAST_BUY_SECONDS
+
+            if last_buy_seconds > max_last_buy_seconds:
+                g["label"] = "PASS"
+                g["score"] = 0
+                g["stake_pct"] = 0
+                g["reason"] = (
+                    f"Final filter: stale last buy "
+                    f"({last_buy_seconds}s, max={max_last_buy_seconds}s, "
+                    f"confirmations={confirmation_count})"
+                )
+                scored.append(g)
+                continue
+
+            try:
+                follower_count_for_cap = int(get_follower_count(g) or 0)
+            except Exception:
+                follower_count_for_cap = 0
+
+            if (
+                str(g.get("consensus_type", "") or "").lower() == "leader_first"
+                and follower_count_for_cap == 0
+                and not bool(g.get("support_boost", False))
+                and int(g.get("stake_pct", 0) or 0) > 80
+            ):
+                old_stake_pct = int(g.get("stake_pct", 0) or 0)
+                g["stake_pct"] = 80
+                g["reason"] = (
+                    f"{g.get('reason', '')} | Stake capped "
+                    f"leader-first/no-followers ({old_stake_pct}% -> 80%)"
+                )
+
+
             if wallet_entry_price is not None:
                 try:
                     wallet_entry_price = float(wallet_entry_price)
@@ -3920,8 +3985,12 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
                 and base_label in {"LEAN", "BET"}
                 and (
                     confirmation_count >= 2
-                    or size_ratio >= 0.5
-                    or accumulation_points >= 30
+                    or (
+                        size_ratio >= 10.0
+                        and accumulation_points >= 30
+                        and buy_count >= 4
+                        and total_size >= 10000
+                    )
                 )
                 and score >= 72
                 and buy_count >= 2
@@ -7032,6 +7101,7 @@ def classify_bet_alert_decision(g, alerted_bets, now_ts, wallet_profiles):
 
     quality_block_reason = get_alert_quality_block_reason(g, wallet_profiles)
     if quality_block_reason:
+        g["quality_filter_reason"] = quality_block_reason
         return "skip_quality_filter"
 
     if g.get("opposite_conflict") and not g.get("possible_flip"):
@@ -8406,7 +8476,9 @@ def send_pushover_bet_alert(g):
 
         score_display = "N/A"
         try:
-            score_display = f"{int(round(float(g.get('score', 0) or 0)))}/100"
+            raw_score = int(round(float(g.get("score", 0) or 0)))
+            display_score = max(0, min(100, raw_score))
+            score_display = f"{display_score}/100"
         except Exception:
             score_display = "N/A"
 
@@ -8424,7 +8496,7 @@ def send_pushover_bet_alert(g):
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
-            f"Current Price: {current_price_str}/{current_price_pct_str} | Entry Price: {entry_price_str}/{entry_price_pct_str}\n"
+            f"Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
@@ -8514,6 +8586,7 @@ def print_signal(g):
     print(f"Market phase:        {market_phase}")
     print(f"Event start:         {event_start}")
     print(f"Current price:       {current_price}")
+    print(f"Current price source:{g.get('current_price_source', 'unknown')}")
 
     if american_odds is not None:
         if american_odds > 0:
@@ -9027,6 +9100,25 @@ if __name__ == "__main__":
                     wallet_performance_guardrails,
                 )
 
+                try:
+                    alert_follower_count_for_cap = int(get_follower_count(alert_g) or 0)
+                except Exception:
+                    alert_follower_count_for_cap = 0
+
+                if (
+                    str(alert_g.get("consensus_type", "") or "").lower() == "leader_first"
+                    and alert_follower_count_for_cap == 0
+                    and not bool(alert_g.get("support_boost", False))
+                    and int(alert_g.get("stake_pct", 0) or 0) > 80
+                ):
+                    old_alert_stake_pct = int(alert_g.get("stake_pct", 0) or 0)
+                    alert_g["stake_pct"] = 80
+                    alert_g["reason"] = (
+                        f"{alert_g.get('reason', '')} | Stake capped "
+                        f"leader-first/no-followers ({old_alert_stake_pct}% -> 80%)"
+                    )
+
+
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
                 decision = classify_bet_alert_decision(
                     alert_g,
@@ -9049,7 +9141,7 @@ if __name__ == "__main__":
                         f"stake={alert_g.get('stake_pct')} "
                         f"phase={alert_g.get('market_phase')} "
                         f"drift={alert_g.get('market_movement_cents')} "
-                        f"quality_filter={alert_g.get('quality_filter_reason')} "
+                        f"quality_filter={alert_g.get('quality_filter_reason') or get_alert_quality_block_reason(alert_g, wallet_profiles)} "
                         f"opposite_conflict={alert_g.get('opposite_conflict')} "
                         f"possible_flip={alert_g.get('possible_flip')} "
                         f"duplicate_reason={alert_g.get('duplicate_reason')}"
