@@ -3460,14 +3460,14 @@ def attach_position_data_and_score(
 
             is_live_for_freshness = str(g.get("market_phase", "") or "").lower() == "live"
 
-            if (
-                is_live_for_freshness
-                and str(g.get("current_price_source", "") or "").lower() == "gamma_fallback"
-            ):
+            if str(g.get("current_price_source", "") or "").lower() == "gamma_fallback":
                 g["label"] = "PASS"
                 g["score"] = 0
                 g["stake_pct"] = 0
-                g["reason"] = "Final filter: live signal blocked because current price source is gamma fallback"
+                g["reason"] = (
+                    "Final filter: signal blocked because current price source "
+                    "is gamma fallback"
+                )
                 scored.append(g)
                 continue
 
