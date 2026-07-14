@@ -324,12 +324,19 @@ BET_ALERT_MAX_CONFIRMED_PREGAME_LAST_BUY_SECONDS = 600
 BET_ALERT_MIN_CONFIRMED_STALE_BUYS = 3
 
 WALLET_GUARDRAILS_ENABLED = True
-WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 8
-WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS = 12
-WALLET_GUARDRAIL_CAP_MAX_ROI = -5.0
-WALLET_GUARDRAIL_SUPPRESS_MAX_ROI = -15.0
+
+# Require a meaningful sample before restricting a wallet.
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 50
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS = 50
+
+# Negative but not severely negative wallets are capped at LEAN.
+# Wallets at -10% ROI or worse are fully suppressed.
+WALLET_GUARDRAIL_CAP_MAX_ROI = 0.0
+WALLET_GUARDRAIL_SUPPRESS_MAX_ROI = -10.0
 WALLET_GUARDRAIL_CAP_STAKE_PCT = 40
-WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED = 15
+
+# Trusted status requires both a large sample and strong profitability.
+WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED = 100
 WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 
 TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
@@ -665,9 +672,17 @@ def load_wallet_performance_guardrails():
         if roi is None and stake > 0:
             roi = (profit / stake) * 100
 
+        wins = int(stats.get("wins", 0) or 0)
+        losses = int(stats.get("losses", 0) or 0)
+        graded_results = wins + losses
+
+
+        # Summary rows from the 2D Wallet sheet contain resolved bets,
+        # profit, and ROI, but do not contain win/loss counts.
+        # Only calculate win rate when actual graded result counts exist.
         win_rate = None
-        if resolved > 0:
-            win_rate = (float(stats.get("wins", 0) or 0) / resolved) * 100
+        if graded_results > 0:
+            win_rate = (wins / graded_results) * 100
 
         action = "allow"
 
@@ -696,8 +711,9 @@ def load_wallet_performance_guardrails():
             "wallet": wallet,
             "action": action,
             "resolved": resolved,
-            "wins": int(stats.get("wins", 0) or 0),
-            "losses": int(stats.get("losses", 0) or 0),
+            "wins": wins,
+            "losses": losses,
+            "graded_results": graded_results,
             "stake": round(stake, 2),
             "profit": round(profit, 2),
             "roi": roi,
@@ -3524,29 +3540,48 @@ def attach_position_data_and_score(
                     wallet_entry_price = None
 
             edge_pct = 0.0
-
-            clv_key = make_clv_key(
-                g.get("slug", ""),
-                g.get("outcome", ""),
-                g.get("wallet", ""),
-            )
-            clv_row = clv_tracker.get(clv_key, {}) if isinstance(clv_tracker, dict) else {}
-            latest_price_for_clv = clv_row.get("latest_price")
-            entry_price_for_clv = clv_row.get("entry_price")
             instant_clv_cents = None
 
+
             try:
-                if latest_price_for_clv is not None and entry_price_for_clv is not None:
-                    instant_clv_cents = round(
-                        (float(latest_price_for_clv) - float(entry_price_for_clv)) * 100,
+                current_price_float = float(current_price)
+                wallet_entry_price_float = float(wallet_entry_price)
+
+
+                if (
+                    0 < current_price_float < 1
+                    and 0 < wallet_entry_price_float < 1
+                ):
+                    edge_pct = round(
+                        ((wallet_entry_price_float / current_price_float) - 1) * 100,
                         2,
                     )
-            except Exception:
+
+
+                    instant_clv_cents = round(
+                        (current_price_float - wallet_entry_price_float) * 100,
+                        2,
+                    )
+            except (TypeError, ValueError, ZeroDivisionError):
+                edge_pct = 0.0
                 instant_clv_cents = None
 
+
+            g["fair_price"] = (
+                round(float(wallet_entry_price), 4)
+                if wallet_entry_price is not None
+                else None
+            )
+            g["fair_american_odds"] = (
+                price_to_american_odds(float(wallet_entry_price))
+                if wallet_entry_price is not None
+                else None
+            )
+            g["edge_pct"] = edge_pct
             g["instant_clv_cents"] = instant_clv_cents
 
-            max_adverse_instant_clv_cents = -5.0
+            max_adverse_instant_clv_cents = 5.0
+
 
             if (
                 int(g.get("stake_pct", 0) or 0) >= 110
@@ -3555,7 +3590,8 @@ def attach_position_data_and_score(
                 or int(g.get("buy_count", 0) or 0) >= 8
                 or str(g.get("consensus_type", "") or "").lower() == "full"
             ):
-                max_adverse_instant_clv_cents = -8.0
+                max_adverse_instant_clv_cents = 8.0
+
 
             if (
                 int(g.get("stake_pct", 0) or 0) >= 125
@@ -3566,7 +3602,8 @@ def attach_position_data_and_score(
                     or str(g.get("consensus_type", "") or "").lower() == "full"
                 )
             ):
-                max_adverse_instant_clv_cents = -10.0
+                max_adverse_instant_clv_cents = 10.0
+
 
             g["max_adverse_instant_clv_cents"] = max_adverse_instant_clv_cents
 
@@ -3594,7 +3631,8 @@ def attach_position_data_and_score(
                 g["reason"] = "Final filter: missing sharp entry price"
 
             else:
-                edge_pct = 0.0
+                edge_pct = float(g.get("edge_pct", 0) or 0)
+
 
                 max_bet_chase_cents = BET_ALERT_MAX_ACCEPTABLE_CHASE_CENTS
 
@@ -3682,24 +3720,24 @@ def attach_position_data_and_score(
 
                 elif (
                     instant_clv_cents is not None
-                    and instant_clv_cents <= max_adverse_instant_clv_cents
+                    and instant_clv_cents >= max_adverse_instant_clv_cents
                 ):
                     g["label"] = "LEAN"
                     g["stake_pct"] = min(int(g.get("stake_pct", 0) or 0), 80)
                     g["reason"] = (
                         f"{g.get('reason', '')} | Downgraded: adverse instant CLV "
-                        f"({instant_clv_cents:+.2f}c, min={max_adverse_instant_clv_cents:+.1f}c)"
+                        f"({instant_clv_cents:+.2f}c, max={max_adverse_instant_clv_cents:+.1f}c)"
                     )
 
 
                 elif (
                     instant_clv_cents is not None
-                    and instant_clv_cents < 0
+                    and instant_clv_cents > 0
                 ):
                     g["label"] = "LEAN"
                     g["stake_pct"] = min(int(g.get("stake_pct", 0) or 0), 80)
                     g["reason"] = (
-                        f"{g.get('reason', '')} | Downgraded: negative instant CLV "
+                        f"{g.get('reason', '')} | Downgraded: positive instant CLV "
                         f"({instant_clv_cents:+.2f}c)"
                     )
 
@@ -8620,6 +8658,7 @@ def print_signal(g):
 
     print(f"Sharp entry price:   {sharp_entry_price}")
 
+
     if sharp_entry_odds is not None:
         if sharp_entry_odds > 0:
             sharp_entry_odds_str = f"+{sharp_entry_odds}"
@@ -8629,6 +8668,32 @@ def print_signal(g):
     else:
         print(f"Sharp entry odds:    N/A")
 
+
+    fair_price = g.get("fair_price")
+    edge_pct = g.get("edge_pct")
+    instant_clv_cents = g.get("instant_clv_cents")
+
+
+    print(
+        f"Fair price:          "
+        f"{fair_price if fair_price is not None else 'N/A'}"
+    )
+
+
+    try:
+        edge_display = f"{float(edge_pct):+.2f}%"
+    except (TypeError, ValueError):
+        edge_display = "N/A"
+
+
+    try:
+        instant_clv_display = f"{float(instant_clv_cents):+.2f} cents"
+    except (TypeError, ValueError):
+        instant_clv_display = "N/A"
+
+
+    print(f"Edge:                {edge_display}")
+    print(f"Instant CLV:         {instant_clv_display}")
     print(f"Drift from entry:    {drift_cents} cents")
     print(f"Time span (seconds): {g.get('seconds_span', 'N/A')}")
     print(f"Since last buy (s):  {g.get('seconds_since_last_buy', 'N/A')}")
