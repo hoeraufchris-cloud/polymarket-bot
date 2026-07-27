@@ -9179,6 +9179,26 @@ if __name__ == "__main__":
                     )
                     alert_g["reason"] = alert_g["quality_filter_reason"]
 
+                try:
+                    final_market_movement_cents = float(
+                        alert_g.get("market_movement_cents")
+                    )
+                except (TypeError, ValueError):
+                    final_market_movement_cents = None
+
+                if (
+                    str(alert_g.get("label", "") or "").upper() == "BET"
+                    and final_market_movement_cents is not None
+                    and final_market_movement_cents > 0
+                ):
+                    alert_g["label"] = "PASS"
+                    alert_g["score"] = 0
+                    alert_g["stake_pct"] = 0
+                    alert_g["quality_filter_reason"] = (
+                        f"Final filter: unfavorable price movement "
+                        f"({final_market_movement_cents:+.2f}c)"
+                    )
+                    alert_g["reason"] = alert_g["quality_filter_reason"]
 
                 alert_g = apply_wallet_performance_guardrail(
                     alert_g,
