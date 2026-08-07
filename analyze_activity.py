@@ -252,8 +252,12 @@ BET_ALERT_SOFT_STRONG_MAX_MINUTES_TO_START = 30
 BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_ONE_FAIL = 2
 BET_ALERT_SOFT_REQUIRED_JUSTIFICATIONS_MULTI_FAIL = 3
 
-BET_ALERT_HARD_MIN_SIZE_RATIO = 1.0
+BET_ALERT_HARD_MIN_LIVE_SIZE_RATIO = 0.75
+BET_ALERT_HARD_MIN_PREGAME_SIZE_RATIO = 1.0
 BET_ALERT_HARD_PRE_EVENISH_MIN_SIZE_RATIO = 5.0
+BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MAX_CENTS = 0.5
+BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MIN_SCORE = 78
+BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MIN_SIZE_RATIO = 1.5
 BET_ALERT_PRE_EARLY_SCORE_BONUS = 5
 BET_ALERT_PRE_LEADER_SCORE_PENALTY = 5
 
@@ -433,6 +437,38 @@ def record_unresolved_execution_market(alert_g, execution_slug, execution_outcom
 
     save_unresolved_execution_markets(unresolved)
 
+def is_pregame_movement_exception(g):
+    if not isinstance(g, dict):
+        return False
+
+    market_phase = str(g.get("market_phase", "") or "").strip().lower()
+
+    try:
+        market_movement_cents = float(
+            g.get("market_movement_cents", 0) or 0
+        )
+    except Exception:
+        return False
+
+    try:
+        score = float(g.get("score", 0) or 0)
+    except Exception:
+        score = 0.0
+
+    try:
+        size_ratio = float(g.get("size_ratio", 0) or 0)
+    except Exception:
+        size_ratio = 0.0
+
+    return (
+        market_phase == "pre-game"
+        and 0 < market_movement_cents
+        <= BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MAX_CENTS
+        and score >= BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MIN_SCORE
+        and size_ratio >= BET_ALERT_PREGAME_MOVEMENT_EXCEPTION_MIN_SIZE_RATIO
+    )
+
+
 def get_structural_hard_fail_reason(g):
     if not isinstance(g, dict):
         return None
@@ -445,8 +481,13 @@ def get_structural_hard_fail_reason(g):
     except Exception:
         size_ratio = 0.0
 
-    if size_ratio < BET_ALERT_HARD_MIN_SIZE_RATIO:
-        return "size_ratio_below_1"
+    if market_phase.lower() == "live":
+        min_size_ratio = BET_ALERT_HARD_MIN_LIVE_SIZE_RATIO
+    else:
+        min_size_ratio = BET_ALERT_HARD_MIN_PREGAME_SIZE_RATIO
+
+    if size_ratio < min_size_ratio:
+        return f"size_ratio_below_{min_size_ratio:g}"
 
     if market_phase == "Live" and odds_bucket == "-110 to -150":
         return "live_-110_to_-150_block"
@@ -3733,6 +3774,7 @@ def attach_position_data_and_score(
                 elif (
                     instant_clv_cents is not None
                     and instant_clv_cents > 0
+                    and not is_pregame_movement_exception(g)
                 ):
                     g["label"] = "LEAN"
                     g["stake_pct"] = min(int(g.get("stake_pct", 0) or 0), 80)
@@ -9168,6 +9210,7 @@ if __name__ == "__main__":
                     str(alert_g.get("label", "") or "").upper() == "BET"
                     and final_edge_percent is not None
                     and final_edge_percent < BET_ALERT_FINAL_MIN_EDGE_PERCENT
+                    and not is_pregame_movement_exception(alert_g)
                 ):
                     alert_g["label"] = "PASS"
                     alert_g["score"] = 0
@@ -9190,6 +9233,7 @@ if __name__ == "__main__":
                     str(alert_g.get("label", "") or "").upper() == "BET"
                     and final_market_movement_cents is not None
                     and final_market_movement_cents > 0
+                    and not is_pregame_movement_exception(alert_g)
                 ):
                     alert_g["label"] = "PASS"
                     alert_g["score"] = 0
