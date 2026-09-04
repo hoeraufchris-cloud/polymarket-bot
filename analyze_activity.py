@@ -151,6 +151,7 @@ def make_market_outcome_key(g):
 
 last_export_day = None
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from market_model import (
     build_recommendations,
     save_recommendations_json,
@@ -188,6 +189,13 @@ POSITION_REFRESH_EVERY_N_CYCLES = 10
 DEEP_DEBUG_EVERY_N_CYCLES = 999999
 HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
 ACTIVITY_BUCKET_COUNT = 2
+
+# Wallet activity/position fetches are one blocking HTTP call each. They are
+# independent of each other, so fetch them concurrently instead of one at a
+# time - this only changes how fast the same data arrives, not what data is
+# used or how it is scored.
+WALLET_FETCH_MAX_WORKERS = 10
+
 RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
 
@@ -328,6 +336,13 @@ BET_ALERT_MAX_CONFIRMED_PREGAME_LAST_BUY_SECONDS = 600
 BET_ALERT_MIN_CONFIRMED_STALE_BUYS = 3
 
 WALLET_GUARDRAILS_ENABLED = True
+
+# Wallet guardrails are computed from the exported "All Bet Signals" sheet/CSV.
+# The bot runs continuously for days between deploys, so this must be refreshed
+# periodically rather than computed once at startup and cached forever.
+# The sheet itself is only regenerated every TRACKED_BETS_EXPORT_INTERVAL_SECONDS,
+# so there is no benefit to refreshing more often than that.
+WALLET_GUARDRAIL_REFRESH_SECONDS = TRACKED_BETS_EXPORT_INTERVAL_SECONDS
 
 # Require a meaningful sample before restricting a wallet.
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 50
@@ -520,6 +535,7 @@ def apply_phase_sequence_score_adjustment(score, g):
     return max(0, adjusted_score)
 
 _WALLET_PERFORMANCE_GUARDRAIL_CACHE = None
+_WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = 0
 
 
 def _wallet_guardrail_float(value, default=0.0):
@@ -557,10 +573,21 @@ def _wallet_guardrail_is_resolved(value):
 
 
 def ensure_all_bet_signals_csv_available():
-    if os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
-        return True
+    csv_already_exists = os.path.exists(ALL_BET_SIGNALS_CSV_PATH)
+
+    if csv_already_exists:
+        csv_age_seconds = time.time() - os.path.getmtime(ALL_BET_SIGNALS_CSV_PATH)
+        if csv_age_seconds < WALLET_GUARDRAIL_REFRESH_SECONDS:
+            return True
 
     if not ALL_BET_SIGNALS_SHEET_ID or not ALL_BET_SIGNALS_SHEET_GID:
+        if csv_already_exists:
+            print(
+                "[WALLET GUARDRAILS] sheet_config_missing_reusing_stale_csv "
+                f"path={ALL_BET_SIGNALS_CSV_PATH}"
+            )
+            return True
+
         print(
             "[WALLET GUARDRAILS] no_csv_found_and_sheet_config_missing "
             f"path={ALL_BET_SIGNALS_CSV_PATH}"
@@ -590,6 +617,14 @@ def ensure_all_bet_signals_csv_available():
                 f"status={response.status_code} "
                 f"preview={content_text[:120]!r}"
             )
+
+            if csv_already_exists:
+                print(
+                    "[WALLET GUARDRAILS] sheet_csv_refresh_invalid_reusing_stale_csv "
+                    f"path={ALL_BET_SIGNALS_CSV_PATH}"
+                )
+                return True
+
             return False
 
         with open(ALL_BET_SIGNALS_CSV_PATH, "w", encoding="utf-8", newline="") as f:
@@ -608,14 +643,30 @@ def ensure_all_bet_signals_csv_available():
             f"path={ALL_BET_SIGNALS_CSV_PATH} "
             f"error={repr(e)}"
         )
+
+        if csv_already_exists:
+            print(
+                "[WALLET GUARDRAILS] sheet_csv_refresh_failed_reusing_stale_csv "
+                f"path={ALL_BET_SIGNALS_CSV_PATH}"
+            )
+            return True
+
         return False
 
 
 def load_wallet_performance_guardrails():
     global _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+    global _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
 
-    if _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None:
+    cache_age_seconds = time.time() - _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
+
+    if (
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None
+        and cache_age_seconds < WALLET_GUARDRAIL_REFRESH_SECONDS
+    ):
         return _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+
+    _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
 
     guardrails = {}
 
@@ -1963,81 +2014,6 @@ def group_accumulation_candidates(trades):
     results = sorted(results, key=lambda r: (r["buy_count"], r["total_size"]), reverse=True)
     return results
 
-
-def build_fair_price_lookup(accumulation_groups):
-    fair_price_lookup = {}
-    grouped = defaultdict(list)
-
-    for g in accumulation_groups:
-        if not isinstance(g, dict):
-            continue
-
-        slug = str(g.get("slug", "") or "")
-        outcome = str(g.get("outcome", "") or "")
-        if not slug or not outcome:
-            continue
-
-        grouped[(slug, outcome)].append(g)
-
-    for key, rows in grouped.items():
-        total_weight = 0.0
-        weighted_price_sum = 0.0
-
-        for row in rows:
-            try:
-                price = float(row.get("avg_trade_price", 0) or 0)
-                size = float(row.get("total_size", 0) or 0)
-            except Exception:
-                continue
-
-            if price <= 0 or size <= 0:
-                continue
-
-            weighted_price_sum += price * size
-            total_weight += size
-
-        if total_weight > 0:
-            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
-
-    return fair_price_lookup
-
-
-def build_fair_price_lookup(accumulation_groups):
-    fair_price_lookup = {}
-    grouped = defaultdict(list)
-
-    for g in accumulation_groups:
-        if not isinstance(g, dict):
-            continue
-
-        slug = str(g.get("slug", "") or "")
-        outcome = str(g.get("outcome", "") or "")
-        if not slug or not outcome:
-            continue
-
-        grouped[(slug, outcome)].append(g)
-
-    for key, rows in grouped.items():
-        total_weight = 0.0
-        weighted_price_sum = 0.0
-
-        for row in rows:
-            try:
-                price = float(row.get("avg_trade_price", 0) or 0)
-                size = float(row.get("total_size", 0) or 0)
-            except Exception:
-                continue
-
-            if price <= 0 or size <= 0:
-                continue
-
-            weighted_price_sum += price * size
-            total_weight += size
-
-        if total_weight > 0:
-            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
-
-    return fair_price_lookup
 
 def build_fair_price_lookup(accumulation_groups):
     fair_price_lookup = {}
@@ -6680,85 +6656,6 @@ def resolve_same_market_bet_conflicts(scored_candidates):
     for g in scored_candidates:
         if not isinstance(g, dict):
             continue
-        slug = str(g.get("slug", "") or "").strip()
-        if not slug:
-            continue
-        grouped[slug].append(g)
-
-    resolved = []
-
-    for slug, candidates in grouped.items():
-        bet_candidates = [
-            g for g in candidates
-            if str(g.get("label", "") or "").upper() == "BET"
-        ]
-
-        if len(bet_candidates) <= 1:
-            resolved.extend(candidates)
-            continue
-
-        def bet_rank(g):
-            try:
-                score = float(g.get("score", 0) or 0)
-            except Exception:
-                score = 0.0
-
-            try:
-                edge_pct = float(g.get("edge_pct", 0) or 0)
-            except Exception:
-                edge_pct = 0.0
-
-            try:
-                market_movement_abs = abs(float(g.get("market_movement_cents", 999) or 999))
-            except Exception:
-                market_movement_abs = 999.0
-
-            try:
-                size_ratio = float(g.get("size_ratio", 0) or 0)
-            except Exception:
-                size_ratio = 0.0
-
-            try:
-                total_size = float(g.get("total_size", 0) or 0)
-            except Exception:
-                total_size = 0.0
-
-            return (
-                score,
-                edge_pct,
-                -market_movement_abs,
-                size_ratio,
-                total_size,
-            )
-
-        winning_bet = max(bet_candidates, key=bet_rank)
-
-        for g in candidates:
-            if g is winning_bet:
-                resolved.append(g)
-                continue
-
-            if str(g.get("label", "") or "").upper() == "BET":
-                g = dict(g)
-                old_reason = str(g.get("reason", "") or "")
-                g["label"] = "PASS"
-                g["score"] = 0
-                g["stake_pct"] = 0
-                g["reason"] = (
-                    f"{old_reason} | Rejected by same-market BET conflict "
-                    f"(kept outcome={winning_bet.get('outcome', '')})"
-                )
-
-            resolved.append(g)
-
-    return resolved
-
-def resolve_same_market_bet_conflicts(scored_candidates):
-    grouped = defaultdict(list)
-
-    for g in scored_candidates:
-        if not isinstance(g, dict):
-            continue
 
         slug = str(g.get("slug", "") or "").strip()
         if not slug:
@@ -7502,12 +7399,18 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         f"tracked_wallets_total={len(TRACKED_WALLETS)}"
     )
 
-    for wallet in wallets_this_cycle:
-        try:
-            wallet_trades = load_activity(wallet)
-            all_trades.extend(wallet_trades)
-        except Exception as e:
-            print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
+    with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
+        future_to_wallet = {
+            executor.submit(load_activity, wallet): wallet
+            for wallet in wallets_this_cycle
+        }
+        for future in as_completed(future_to_wallet):
+            wallet = future_to_wallet[future]
+            try:
+                wallet_trades = future.result()
+                all_trades.extend(wallet_trades)
+            except Exception as e:
+                print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
 
     recent_trades, cutoff_ts, now_ts = filter_recent_trades(
         all_trades,
@@ -7556,12 +7459,18 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     if should_refresh_positions:
         positions = []
 
-        for wallet in TRACKED_WALLETS:
-            try:
-                wallet_positions = load_positions(wallet)
-                positions.extend(wallet_positions)
-            except Exception as e:
-                print(f"[Position fetch error] {wallet} -> {repr(e)}")
+        with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
+            future_to_wallet = {
+                executor.submit(load_positions, wallet): wallet
+                for wallet in TRACKED_WALLETS
+            }
+            for future in as_completed(future_to_wallet):
+                wallet = future_to_wallet[future]
+                try:
+                    wallet_positions = future.result()
+                    positions.extend(wallet_positions)
+                except Exception as e:
+                    print(f"[Position fetch error] {wallet} -> {repr(e)}")
 
         CACHED_POSITIONS = positions
         CACHED_POSITION_LOOKUP = build_position_lookup(positions)
@@ -9089,6 +8998,33 @@ if __name__ == "__main__":
             if model_history_recorded_count > 0:
                 save_signal_metrics_history(signal_metrics_history)
 
+            recent_model_signal_metrics = filter_recent_signal_metrics_rows(
+                signal_metrics_history,
+                MODEL_HISTORY_LOOKBACK_HOURS,
+            )
+            market_model_recommendations = build_recommendations(recent_model_signal_metrics)
+            save_recommendations_json(market_model_recommendations)
+
+            market_model_debug_counts = getattr(build_recommendations, "last_debug_counts", {})
+            market_model_early_watch_diagnostics = getattr(
+                build_recommendations, "last_early_watch_diagnostics", {}
+            )
+
+            tracked_model_recommendation_count = sum(
+                1
+                for rec in market_model_recommendations
+                if track_model_recommendation(rec, result["now_ts"])
+            )
+
+            signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
+                signal_stage_tracker,
+                market_model_recommendations,
+                tracked_bets,
+                clv_tracker,
+                result["now_ts"],
+            )
+            save_signal_stage_tracker(signal_stage_tracker)
+
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
             alert_decision_counts["cycle_deduped_away"] = (
@@ -9117,6 +9053,8 @@ if __name__ == "__main__":
             wallet_performance_guardrails = load_wallet_performance_guardrails()
 
             new_bet_alerts = []
+            clv_tracker_changed_this_cycle = False
+            alerted_bets_changed_this_cycle = False
             for g in alert_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
 
@@ -9269,6 +9207,7 @@ if __name__ == "__main__":
 
 
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
+                clv_tracker_changed_this_cycle = True
                 decision = classify_bet_alert_decision(
                     alert_g,
                     alerted_bets,
@@ -9299,6 +9238,7 @@ if __name__ == "__main__":
 
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"], wallet_profiles):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
+                    alerted_bets_changed_this_cycle = True
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
 
                     tracked_key = make_tracked_bet_key(alert_g, result["now_ts"])
@@ -9691,6 +9631,12 @@ if __name__ == "__main__":
 
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
+
+            if clv_tracker_changed_this_cycle:
+                save_clv_tracker(clv_tracker)
+
+            if alerted_bets_changed_this_cycle:
+                save_alerted_bets(alerted_bets)
 
             cycle_bet_alerts = new_bet_alerts
 
