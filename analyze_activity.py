@@ -7,6 +7,16 @@ except Exception as e:
 
 import json
 import csv
+
+
+def save_json_atomic(path, data, **dump_kwargs):
+    """Write JSON to `path` without ever leaving a truncated/corrupt file on disk."""
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, **dump_kwargs)
+    os.replace(tmp_path, path)
+
+
 def log_alert(bet):
     try:
         with open("all_alerts.json", "r") as f:
@@ -33,8 +43,7 @@ def load_tracked_model_bets():
 
 def save_tracked_model_bets(tracked_model_bets):
     try:
-        with open(TRACKED_MODEL_BETS_PATH, "w") as f:
-            json.dump(tracked_model_bets, f, indent=2)
+        save_json_atomic(TRACKED_MODEL_BETS_PATH, tracked_model_bets, indent=2)
     except Exception as e:
         print(f"[Model tracking save error] {repr(e)}")
 
@@ -151,7 +160,6 @@ def make_market_outcome_key(g):
 
 last_export_day = None
 from collections import defaultdict
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from market_model import (
     build_recommendations,
     save_recommendations_json,
@@ -189,13 +197,6 @@ POSITION_REFRESH_EVERY_N_CYCLES = 10
 DEEP_DEBUG_EVERY_N_CYCLES = 999999
 HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
 ACTIVITY_BUCKET_COUNT = 2
-
-# Wallet activity/position fetches are one blocking HTTP call each. They are
-# independent of each other, so fetch them concurrently instead of one at a
-# time - this only changes how fast the same data arrives, not what data is
-# used or how it is scored.
-WALLET_FETCH_MAX_WORKERS = 10
-
 RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
 
@@ -337,13 +338,6 @@ BET_ALERT_MIN_CONFIRMED_STALE_BUYS = 3
 
 WALLET_GUARDRAILS_ENABLED = True
 
-# Wallet guardrails are computed from the exported "All Bet Signals" sheet/CSV.
-# The bot runs continuously for days between deploys, so this must be refreshed
-# periodically rather than computed once at startup and cached forever.
-# The sheet itself is only regenerated every TRACKED_BETS_EXPORT_INTERVAL_SECONDS,
-# so there is no benefit to refreshing more often than that.
-WALLET_GUARDRAIL_REFRESH_SECONDS = TRACKED_BETS_EXPORT_INTERVAL_SECONDS
-
 # Require a meaningful sample before restricting a wallet.
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP = 50
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS = 50
@@ -409,9 +403,7 @@ def load_unresolved_execution_markets():
 
 def save_unresolved_execution_markets(data):
     os.makedirs(os.path.dirname(UNRESOLVED_EXECUTION_MARKETS_PATH), exist_ok=True)
-
-    with open(UNRESOLVED_EXECUTION_MARKETS_PATH, "w") as f:
-        json.dump(data, f, indent=2, default=str)
+    save_json_atomic(UNRESOLVED_EXECUTION_MARKETS_PATH, data, indent=2, default=str)
 
 
 def record_unresolved_execution_market(alert_g, execution_slug, execution_outcome, execution_price, error_text):
@@ -535,7 +527,6 @@ def apply_phase_sequence_score_adjustment(score, g):
     return max(0, adjusted_score)
 
 _WALLET_PERFORMANCE_GUARDRAIL_CACHE = None
-_WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = 0
 
 
 def _wallet_guardrail_float(value, default=0.0):
@@ -573,21 +564,10 @@ def _wallet_guardrail_is_resolved(value):
 
 
 def ensure_all_bet_signals_csv_available():
-    csv_already_exists = os.path.exists(ALL_BET_SIGNALS_CSV_PATH)
-
-    if csv_already_exists:
-        csv_age_seconds = time.time() - os.path.getmtime(ALL_BET_SIGNALS_CSV_PATH)
-        if csv_age_seconds < WALLET_GUARDRAIL_REFRESH_SECONDS:
-            return True
+    if os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
+        return True
 
     if not ALL_BET_SIGNALS_SHEET_ID or not ALL_BET_SIGNALS_SHEET_GID:
-        if csv_already_exists:
-            print(
-                "[WALLET GUARDRAILS] sheet_config_missing_reusing_stale_csv "
-                f"path={ALL_BET_SIGNALS_CSV_PATH}"
-            )
-            return True
-
         print(
             "[WALLET GUARDRAILS] no_csv_found_and_sheet_config_missing "
             f"path={ALL_BET_SIGNALS_CSV_PATH}"
@@ -617,14 +597,6 @@ def ensure_all_bet_signals_csv_available():
                 f"status={response.status_code} "
                 f"preview={content_text[:120]!r}"
             )
-
-            if csv_already_exists:
-                print(
-                    "[WALLET GUARDRAILS] sheet_csv_refresh_invalid_reusing_stale_csv "
-                    f"path={ALL_BET_SIGNALS_CSV_PATH}"
-                )
-                return True
-
             return False
 
         with open(ALL_BET_SIGNALS_CSV_PATH, "w", encoding="utf-8", newline="") as f:
@@ -643,30 +615,14 @@ def ensure_all_bet_signals_csv_available():
             f"path={ALL_BET_SIGNALS_CSV_PATH} "
             f"error={repr(e)}"
         )
-
-        if csv_already_exists:
-            print(
-                "[WALLET GUARDRAILS] sheet_csv_refresh_failed_reusing_stale_csv "
-                f"path={ALL_BET_SIGNALS_CSV_PATH}"
-            )
-            return True
-
         return False
 
 
 def load_wallet_performance_guardrails():
     global _WALLET_PERFORMANCE_GUARDRAIL_CACHE
-    global _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
 
-    cache_age_seconds = time.time() - _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
-
-    if (
-        _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None
-        and cache_age_seconds < WALLET_GUARDRAIL_REFRESH_SECONDS
-    ):
+    if _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None:
         return _WALLET_PERFORMANCE_GUARDRAIL_CACHE
-
-    _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
 
     guardrails = {}
 
@@ -1474,8 +1430,7 @@ def load_wallet_history_stats_cache():
 
 def save_wallet_history_stats_cache(cache):
     try:
-        with open(WALLET_HISTORY_STATS_PATH, "w") as f:
-            json.dump(cache, f, indent=2)
+        save_json_atomic(WALLET_HISTORY_STATS_PATH, cache, indent=2)
     except Exception as e:
         print(f"[Wallet history stats save error] {repr(e)}")
 
@@ -2014,6 +1969,81 @@ def group_accumulation_candidates(trades):
     results = sorted(results, key=lambda r: (r["buy_count"], r["total_size"]), reverse=True)
     return results
 
+
+def build_fair_price_lookup(accumulation_groups):
+    fair_price_lookup = {}
+    grouped = defaultdict(list)
+
+    for g in accumulation_groups:
+        if not isinstance(g, dict):
+            continue
+
+        slug = str(g.get("slug", "") or "")
+        outcome = str(g.get("outcome", "") or "")
+        if not slug or not outcome:
+            continue
+
+        grouped[(slug, outcome)].append(g)
+
+    for key, rows in grouped.items():
+        total_weight = 0.0
+        weighted_price_sum = 0.0
+
+        for row in rows:
+            try:
+                price = float(row.get("avg_trade_price", 0) or 0)
+                size = float(row.get("total_size", 0) or 0)
+            except Exception:
+                continue
+
+            if price <= 0 or size <= 0:
+                continue
+
+            weighted_price_sum += price * size
+            total_weight += size
+
+        if total_weight > 0:
+            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
+
+    return fair_price_lookup
+
+
+def build_fair_price_lookup(accumulation_groups):
+    fair_price_lookup = {}
+    grouped = defaultdict(list)
+
+    for g in accumulation_groups:
+        if not isinstance(g, dict):
+            continue
+
+        slug = str(g.get("slug", "") or "")
+        outcome = str(g.get("outcome", "") or "")
+        if not slug or not outcome:
+            continue
+
+        grouped[(slug, outcome)].append(g)
+
+    for key, rows in grouped.items():
+        total_weight = 0.0
+        weighted_price_sum = 0.0
+
+        for row in rows:
+            try:
+                price = float(row.get("avg_trade_price", 0) or 0)
+                size = float(row.get("total_size", 0) or 0)
+            except Exception:
+                continue
+
+            if price <= 0 or size <= 0:
+                continue
+
+            weighted_price_sum += price * size
+            total_weight += size
+
+        if total_weight > 0:
+            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
+
+    return fair_price_lookup
 
 def build_fair_price_lookup(accumulation_groups):
     fair_price_lookup = {}
@@ -4296,138 +4326,27 @@ def apply_consensus_upgrades(scored_candidates, consensus_list, wallet_profiles)
     if not RUNTIME_SUMMARY_ONLY:
         print("CONSENSUS UPGRADE DEBUG")
         print("-" * 80)
-        print(f"Total candidates checked:           {debug_counts['checked']}")
-        print(f"Missing consensus:                  {debug_counts['missing_consensus']}")
-        print(f"Bad role:                           {debug_counts['bad_role']}")
-        print(f"Bad label:                          {debug_counts['bad_label']}")
-        print(f"Not full consensus:                 {debug_counts['not_full_consensus']}")
-        print(f"Too few wallets scored:             {debug_counts['too_few_wallets_scored']}")
-        print(f"Weighted score too low:             {debug_counts['weighted_score_too_low']}")
-        print(f"No leader/early contributor:        {debug_counts['no_leader_or_early']}")
-        print(f"Quality contributors too low:       {debug_counts['quality_contributors_too_low']}")
-        print(f"Size ratio too low:                 {debug_counts['size_ratio_too_low']}")
-        print(f"Missing edge:                       {debug_counts['missing_edge']}")
-        print(f"Edge too low:                       {debug_counts['edge_too_low']}")
-        print(f"Negative market movement:           {debug_counts['negative_market_movement']}")
-        print(f"Too old:                            {debug_counts['too_old']}")
-        print(f"Consensus score too low:            {debug_counts['consensus_score_too_low']}")
-        print(f"Upgraded to BET:                    {debug_counts['upgraded']}")
+        print(f"Total candidates checked:           {consensus_debug.get('total_candidates', 0)}")
+        print(f"Not a dict:                          {consensus_debug.get('not_dict', 0)}")
+        print(f"No consensus:                        {consensus_debug.get('no_consensus', 0)}")
+        print(f"Bad role:                            {consensus_debug.get('bad_role', 0)}")
+        print(f"No base structure:                   {consensus_debug.get('no_base_structure', 0)}")
+        print(f"Not full consensus:                  {consensus_debug.get('not_full_consensus', 0)}")
+        print(f"Too few wallets scored:               {consensus_debug.get('too_few_wallets_scored', 0)}")
+        print(f"Weighted score too low:               {consensus_debug.get('weighted_score_too_low', 0)}")
+        print(f"No leader/early contributor:          {consensus_debug.get('no_leader_or_early', 0)}")
+        print(f"Quality contributors too low:         {consensus_debug.get('quality_contributors_too_low', 0)}")
+        print(f"Size ratio too low:                   {consensus_debug.get('size_ratio_too_low', 0)}")
+        print(f"Missing edge:                         {consensus_debug.get('missing_edge', 0)}")
+        print(f"Edge too low:                         {consensus_debug.get('edge_too_low', 0)}")
+        print(f"Negative market movement:             {consensus_debug.get('market_movement_negative', 0)}")
+        print(f"Too old:                              {consensus_debug.get('too_old', 0)}")
+        print(f"Consensus score too low:              {consensus_debug.get('consensus_score_too_low', 0)}")
+        print(f"Upgraded to BET:                      {consensus_debug.get('upgraded_to_bet', 0)}")
         print("-" * 80)
 
     return upgraded
-    consensus_lookup = {}
-    for c in consensus_list:
-        if not isinstance(c, dict):
-            continue
-        key = (c.get("slug", ""), c.get("outcome", ""))
-        consensus_lookup[key] = c
-
-    scored_index = {}
-    for g in scored_candidates:
-        if not isinstance(g, dict):
-            continue
-        scored_index[(g.get("slug", ""), g.get("outcome", ""), g.get("wallet", ""))] = g
-
-    upgraded = []
-
-    for g in scored_candidates:
-        if not isinstance(g, dict):
-            upgraded.append(g)
-            continue
-
-        g = dict(g)
-        g["consensus_upgrade"] = False
-        g["consensus_type"] = None
-        g["consensus_score"] = 0
-        g["weighted_wallet_score_scored"] = 0
-
-        consensus = consensus_lookup.get((g.get("slug", ""), g.get("outcome", "")))
-        if not consensus:
-            upgraded.append(g)
-            continue
-
-        g["consensus_type"] = consensus.get("consensus_type")
-        g["consensus_score"] = consensus.get("consensus_score", 0)
-        g["weighted_wallet_score_scored"] = consensus.get("weighted_wallet_score_scored", 0)
-
-        if g.get("label") != "LEAN":
-            upgraded.append(g)
-            continue
-
-        self_role = str(g.get("sequence_role", "") or "").lower()
-        if self_role not in {"leader", "early"}:
-            upgraded.append(g)
-            continue
-
-        if consensus.get("consensus_type") != "full":
-            upgraded.append(g)
-            continue
-
-        if consensus.get("wallet_count_scored", 0) < 2:
-            upgraded.append(g)
-            continue
-
-        if float(consensus.get("weighted_wallet_score_scored", 0) or 0) < CONSENSUS_UPGRADE_MIN_WEIGHTED_SCORE:
-            upgraded.append(g)
-            continue
-
-        # --- NEW: require quality contributors for consensus upgrade ---
-        consensus_groups = consensus.get("groups", [])
-        quality_contributor_count = 0
-
-        for group_row in consensus_groups:
-            wallet = group_row.get("wallet", "")
-            scored_match = scored_index.get((g.get("slug", ""), g.get("outcome", ""), wallet))
-            if not scored_match:
-                continue
-
-            wallet_weight = float(wallet_profiles.get(wallet, {}).get("dynamic_weight", 1.0) or 1.0)
-            label = str(scored_match.get("label", "") or "").upper()
-            role = str(group_row.get("sequence_role", "") or "")
-            paired_recent = bool(group_row.get("paired_recent", False))
-
-            if (
-                label in {"LEAN", "BET", "STRONG BET"}
-                and wallet_weight >= 1.0
-                and role in {"leader", "early"}
-                and not paired_recent
-            ):
-                quality_contributor_count += 1
-
-        if quality_contributor_count < 2:
-            upgraded.append(g)
-            continue
-
-        market_movement_cents = float(g.get("market_movement_cents", 0) or 0)
-        if market_movement_cents < 0:
-            upgraded.append(g)
-            continue
-
-        seconds_since_last_buy = int(g.get("seconds_since_last_buy", 999999) or 999999)
-        if seconds_since_last_buy > CONSENSUS_UPGRADE_MAX_AGE_SECONDS:
-            upgraded.append(g)
-            continue
-
-        old_reason = g.get("reason", "")
-        old_score = int(g.get("score", 0) or 0)
-        old_stake = int(g.get("stake_pct", 0) or 0)
-
-        g["label"] = "BET"
-        g["score"] = max(old_score, 80)
-        g["stake_pct"] = max(old_stake, 100)
-        g["consensus_upgrade"] = True
-        g["reason"] = (
-            f"{old_reason} | Upgraded by full cross-wallet consensus "
-            f"(wallets_scored={consensus.get('wallet_count_scored', 0)}, "
-            f"weighted_score={consensus.get('weighted_wallet_score_scored', 0)}, "
-            f"quality_contributors={quality_contributor_count})"
-        )
-
-        upgraded.append(g)
-
-    return upgraded
-
-
+    
 def build_consensus_diagnostics(accumulation_groups, scored_candidates):
     scored_index = {}
     for g in scored_candidates:
@@ -4560,8 +4479,7 @@ def load_clv_tracker():
 def save_clv_tracker(clv_tracker):
     try:
         os.makedirs(os.path.dirname(CLV_TRACKER_PATH), exist_ok=True)
-        with open(CLV_TRACKER_PATH, "w", encoding="utf-8") as f:
-            json.dump(clv_tracker, f, indent=2, sort_keys=True)
+        save_json_atomic(CLV_TRACKER_PATH, clv_tracker, indent=2, sort_keys=True)
     except Exception as e:
         print(f"[CLV tracker save error] {repr(e)}")
 
@@ -4610,8 +4528,7 @@ def save_alerted_bets(alerted_bets):
                 cleaned[key] = row
 
         os.makedirs(os.path.dirname(ALERTED_BETS_PATH), exist_ok=True)
-        with open(ALERTED_BETS_PATH, "w", encoding="utf-8") as f:
-            json.dump(cleaned, f, indent=2, sort_keys=True)
+        save_json_atomic(ALERTED_BETS_PATH, cleaned, indent=2, sort_keys=True)
     except Exception as e:
         print(f"[Alerted bets save error] {repr(e)}")
 
@@ -4619,8 +4536,7 @@ def save_alerted_bets(alerted_bets):
 def save_tracked_bets(tracked_bets):
     try:
         os.makedirs(os.path.dirname(TRACKED_BETS_PATH), exist_ok=True)
-        with open(TRACKED_BETS_PATH, "w", encoding="utf-8") as f:
-            json.dump(tracked_bets, f, indent=2, sort_keys=True)
+        save_json_atomic(TRACKED_BETS_PATH, tracked_bets, indent=2, sort_keys=True)
     except Exception as e:
         print(f"[Tracked bets save error] {repr(e)}")
 
@@ -4638,8 +4554,7 @@ def load_signal_metrics_history():
 def save_signal_metrics_history(signal_metrics_history):
     try:
         os.makedirs(os.path.dirname(SIGNAL_METRICS_HISTORY_PATH), exist_ok=True)
-        with open(SIGNAL_METRICS_HISTORY_PATH, "w", encoding="utf-8") as f:
-            json.dump(signal_metrics_history, f, indent=2)
+        save_json_atomic(SIGNAL_METRICS_HISTORY_PATH, signal_metrics_history, indent=2)
     except Exception as e:
         print(f"[Signal metrics history save error] {repr(e)}")
 
@@ -4844,8 +4759,7 @@ def load_signal_stage_tracker():
 def save_signal_stage_tracker(signal_stage_tracker):
     try:
         os.makedirs(os.path.dirname(SIGNAL_STAGE_TRACKER_PATH), exist_ok=True)
-        with open(SIGNAL_STAGE_TRACKER_PATH, "w", encoding="utf-8") as f:
-            json.dump(signal_stage_tracker, f, indent=2, sort_keys=True)
+        save_json_atomic(SIGNAL_STAGE_TRACKER_PATH, signal_stage_tracker, indent=2, sort_keys=True)
     except Exception as e:
         print(f"[Signal stage tracker save error] {repr(e)}")
 
@@ -6656,6 +6570,85 @@ def resolve_same_market_bet_conflicts(scored_candidates):
     for g in scored_candidates:
         if not isinstance(g, dict):
             continue
+        slug = str(g.get("slug", "") or "").strip()
+        if not slug:
+            continue
+        grouped[slug].append(g)
+
+    resolved = []
+
+    for slug, candidates in grouped.items():
+        bet_candidates = [
+            g for g in candidates
+            if str(g.get("label", "") or "").upper() == "BET"
+        ]
+
+        if len(bet_candidates) <= 1:
+            resolved.extend(candidates)
+            continue
+
+        def bet_rank(g):
+            try:
+                score = float(g.get("score", 0) or 0)
+            except Exception:
+                score = 0.0
+
+            try:
+                edge_pct = float(g.get("edge_pct", 0) or 0)
+            except Exception:
+                edge_pct = 0.0
+
+            try:
+                market_movement_abs = abs(float(g.get("market_movement_cents", 999) or 999))
+            except Exception:
+                market_movement_abs = 999.0
+
+            try:
+                size_ratio = float(g.get("size_ratio", 0) or 0)
+            except Exception:
+                size_ratio = 0.0
+
+            try:
+                total_size = float(g.get("total_size", 0) or 0)
+            except Exception:
+                total_size = 0.0
+
+            return (
+                score,
+                edge_pct,
+                -market_movement_abs,
+                size_ratio,
+                total_size,
+            )
+
+        winning_bet = max(bet_candidates, key=bet_rank)
+
+        for g in candidates:
+            if g is winning_bet:
+                resolved.append(g)
+                continue
+
+            if str(g.get("label", "") or "").upper() == "BET":
+                g = dict(g)
+                old_reason = str(g.get("reason", "") or "")
+                g["label"] = "PASS"
+                g["score"] = 0
+                g["stake_pct"] = 0
+                g["reason"] = (
+                    f"{old_reason} | Rejected by same-market BET conflict "
+                    f"(kept outcome={winning_bet.get('outcome', '')})"
+                )
+
+            resolved.append(g)
+
+    return resolved
+
+def resolve_same_market_bet_conflicts(scored_candidates):
+    grouped = defaultdict(list)
+
+    for g in scored_candidates:
+        if not isinstance(g, dict):
+            continue
 
         slug = str(g.get("slug", "") or "").strip()
         if not slug:
@@ -7399,18 +7392,12 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         f"tracked_wallets_total={len(TRACKED_WALLETS)}"
     )
 
-    with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
-        future_to_wallet = {
-            executor.submit(load_activity, wallet): wallet
-            for wallet in wallets_this_cycle
-        }
-        for future in as_completed(future_to_wallet):
-            wallet = future_to_wallet[future]
-            try:
-                wallet_trades = future.result()
-                all_trades.extend(wallet_trades)
-            except Exception as e:
-                print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
+    for wallet in wallets_this_cycle:
+        try:
+            wallet_trades = load_activity(wallet)
+            all_trades.extend(wallet_trades)
+        except Exception as e:
+            print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
 
     recent_trades, cutoff_ts, now_ts = filter_recent_trades(
         all_trades,
@@ -7459,18 +7446,12 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     if should_refresh_positions:
         positions = []
 
-        with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
-            future_to_wallet = {
-                executor.submit(load_positions, wallet): wallet
-                for wallet in TRACKED_WALLETS
-            }
-            for future in as_completed(future_to_wallet):
-                wallet = future_to_wallet[future]
-                try:
-                    wallet_positions = future.result()
-                    positions.extend(wallet_positions)
-                except Exception as e:
-                    print(f"[Position fetch error] {wallet} -> {repr(e)}")
+        for wallet in TRACKED_WALLETS:
+            try:
+                wallet_positions = load_positions(wallet)
+                positions.extend(wallet_positions)
+            except Exception as e:
+                print(f"[Position fetch error] {wallet} -> {repr(e)}")
 
         CACHED_POSITIONS = positions
         CACHED_POSITION_LOOKUP = build_position_lookup(positions)
@@ -8998,33 +8979,6 @@ if __name__ == "__main__":
             if model_history_recorded_count > 0:
                 save_signal_metrics_history(signal_metrics_history)
 
-            recent_model_signal_metrics = filter_recent_signal_metrics_rows(
-                signal_metrics_history,
-                MODEL_HISTORY_LOOKBACK_HOURS,
-            )
-            market_model_recommendations = build_recommendations(recent_model_signal_metrics)
-            save_recommendations_json(market_model_recommendations)
-
-            market_model_debug_counts = getattr(build_recommendations, "last_debug_counts", {})
-            market_model_early_watch_diagnostics = getattr(
-                build_recommendations, "last_early_watch_diagnostics", {}
-            )
-
-            tracked_model_recommendation_count = sum(
-                1
-                for rec in market_model_recommendations
-                if track_model_recommendation(rec, result["now_ts"])
-            )
-
-            signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
-                signal_stage_tracker,
-                market_model_recommendations,
-                tracked_bets,
-                clv_tracker,
-                result["now_ts"],
-            )
-            save_signal_stage_tracker(signal_stage_tracker)
-
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
             alert_decision_counts["cycle_deduped_away"] = (
@@ -9053,8 +9007,6 @@ if __name__ == "__main__":
             wallet_performance_guardrails = load_wallet_performance_guardrails()
 
             new_bet_alerts = []
-            clv_tracker_changed_this_cycle = False
-            alerted_bets_changed_this_cycle = False
             for g in alert_candidates:
                 alert_g = annotate_opposite_side_conflict(g, alerted_bets)
 
@@ -9207,7 +9159,6 @@ if __name__ == "__main__":
 
 
                 record_clv_bet(alert_g, clv_tracker, result["now_ts"])
-                clv_tracker_changed_this_cycle = True
                 decision = classify_bet_alert_decision(
                     alert_g,
                     alerted_bets,
@@ -9238,7 +9189,6 @@ if __name__ == "__main__":
 
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"], wallet_profiles):
                     store_bet_alert(alert_g, alerted_bets, result["now_ts"])
-                    alerted_bets_changed_this_cycle = True
                     record_tracked_bet(alert_g, tracked_bets, result["now_ts"])
 
                     tracked_key = make_tracked_bet_key(alert_g, result["now_ts"])
@@ -9631,12 +9581,6 @@ if __name__ == "__main__":
 
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
-
-            if clv_tracker_changed_this_cycle:
-                save_clv_tracker(clv_tracker)
-
-            if alerted_bets_changed_this_cycle:
-                save_alerted_bets(alerted_bets)
 
             cycle_bet_alerts = new_bet_alerts
 
@@ -10162,6 +10106,14 @@ if __name__ == "__main__":
                     subprocess.run(["python3", "export_tracked_bets.py"], check=True)
                     last_export_day = current_export_bucket
                     print("Railway resolved export completed.")
+
+                    # resolve_tracked_bets.py just wrote its own resolutions straight
+                    # to tracked_bets.json on disk. Our in-memory `tracked_bets` dict
+                    # was loaded once at startup and is now stale relative to that —
+                    # reload it so we don't later overwrite the subprocess's
+                    # resolutions with our own stale in-memory copy.
+                    tracked_bets = load_tracked_bets()
+                    print("Reloaded tracked_bets from disk after resolve/export.")
                 except Exception as e:
                     print(f"Export pipeline failed: {e}")
         else:

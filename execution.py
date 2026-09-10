@@ -1,5 +1,12 @@
 import json
 import os
+
+
+def save_json_atomic(path, data, **dump_kwargs):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, **dump_kwargs)
+    os.replace(tmp_path, path)
 import time
 from decimal import Decimal, ROUND_DOWN
 
@@ -844,8 +851,7 @@ def save_execution_ledger(rows):
 
     rows_to_save = rows[-EXECUTION_LEDGER_MAX_ROWS:]
 
-    with open(EXECUTION_LEDGER_PATH, "w") as f:
-        json.dump(rows_to_save, f, indent=2, default=str)
+    save_json_atomic(EXECUTION_LEDGER_PATH, rows_to_save, indent=2, default=str)
 
 
 def get_recent_execution_record(market_slug, outcome, price):
@@ -1315,54 +1321,6 @@ def execute_order_safely(
         "mode": "LIVE_ORDER_PLACED",
         "order": order,
     }
-
-    if not LIVE_ORDER_CREATE_CONFIRMATION:
-        return {
-            "mode": "LIVE_ORDER_BLOCKED_CONFIRMATION_MISSING",
-            "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
-            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
-            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
-            "live_safe": live_safe,
-            "live_safety_reason": "missing_live_order_create_confirmation",
-            "live_order_market_whitelisted": live_whitelisted,
-            "live_order_market_whitelist_reason": live_whitelist_reason,
-            "payload": payload,
-            "request_payload": request_payload,
-            "preview": preview,
-        }
-
-    if not live_safe:
-        return {
-            "mode": "LIVE_ORDER_BLOCKED_SAFETY_CHECK",
-            "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
-            "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
-            "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
-            "live_safe": live_safe,
-            "live_safety_reason": live_safety_reason,
-            "live_order_market_whitelisted": live_whitelisted,
-            "live_order_market_whitelist_reason": live_whitelist_reason,
-            "payload": payload,
-            "request_payload": request_payload,
-            "preview": preview,
-        }
-
-    order = client.orders.create(request_payload)
-
-    return {
-        "mode": "LIVE_ORDER_PLACED",
-        "real_money_orders_enabled": ENABLE_REAL_MONEY_ORDERS,
-        "live_order_create_confirmation": LIVE_ORDER_CREATE_CONFIRMATION,
-        "live_order_max_usd": str(LIVE_ORDER_MAX_USD),
-        "live_safe": live_safe,
-        "live_safety_reason": live_safety_reason,
-        "live_order_market_whitelisted": live_whitelisted,
-        "live_order_market_whitelist_reason": live_whitelist_reason,
-        "payload": payload,
-        "request_payload": request_payload,
-        "preview": preview,
-        "order": order,
-    }
-
 
 def place_order(
     market_slug,

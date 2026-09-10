@@ -2,6 +2,13 @@ import json
 from datetime import datetime, timezone
 import time
 import os
+
+
+def save_json_atomic(path, data, **dump_kwargs):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, **dump_kwargs)
+    os.replace(tmp_path, path)
 from collections import defaultdict
 from datetime import datetime, timezone
 
@@ -769,8 +776,7 @@ def save_recommendations_json(recommendations):
         "recommendations": recommendations,
     }
     try:
-        with open(MARKET_MODEL_OUTPUT_PATH, "w", encoding="utf-8") as f:
-            json.dump(payload, f, indent=2)
+        save_json_atomic(MARKET_MODEL_OUTPUT_PATH, payload, indent=2)
     except Exception as e:
         print(f"[Market model output save error] {repr(e)}")
 

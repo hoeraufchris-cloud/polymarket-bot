@@ -6,6 +6,13 @@ import urllib.request
 import ssl
 import os
 
+
+def save_json_atomic(path, data, **dump_kwargs):
+    tmp_path = f"{path}.tmp"
+    with open(tmp_path, "w", encoding="utf-8") as f:
+        json.dump(data, f, **dump_kwargs)
+    os.replace(tmp_path, path)
+
 try:
     import truststore
 except Exception:
@@ -67,8 +74,7 @@ def load_tracked_bets():
 
 
 def save_tracked_bets(data):
-    with open(INPUT_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, sort_keys=True)
+    save_json_atomic(INPUT_FILE, data, indent=2, sort_keys=True)
 
 
 def parse_iso_to_ts(value):
