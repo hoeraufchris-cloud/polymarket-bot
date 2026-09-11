@@ -203,7 +203,7 @@ ACTIVITY_BUCKET_COUNT = 2
 # independent of each other, so fetch them concurrently instead of one at a
 # time - this only changes how fast the same data arrives, not what data is
 # used or how it is scored.
-WALLET_FETCH_MAX_WORKERS = 50
+WALLET_FETCH_MAX_WORKERS = 100
 
 RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
