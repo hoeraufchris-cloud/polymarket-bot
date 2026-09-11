@@ -110,6 +110,7 @@ def track_model_recommendation(recommendation, now_ts):
 
 import time
 import requests
+import threading
 import urllib.request
 import urllib.parse
 import re
@@ -1282,7 +1283,70 @@ def configure_ssl_ca_environment():
     os.environ["REQUESTS_CA_BUNDLE"] = bundle_path
     return bundle_path
 
+_HTTP_SESSION = None
+_HTTP_SESSION_LOCK = threading.Lock()
+
+
+def _build_pooled_http_session():
+    # Same SSL trust logic as the urllib fallback below, built once and
+    # reused - a persistent HTTPS connection pool per host instead of a
+    # fresh TCP+TLS handshake on every wallet fetch. Pure speed change,
+    # same trust rules, same data.
+    ssl_context = None
+    if TRUSTSTORE_INJECTED:
+        try:
+            ssl_context = ssl.create_default_context()
+        except Exception:
+            ssl_context = None
+
+    if ssl_context is None:
+        bundle_path = configure_ssl_ca_environment()
+        if bundle_path:
+            try:
+                ssl_context = ssl.create_default_context(cafile=bundle_path)
+            except Exception:
+                ssl_context = None
+
+    if ssl_context is None:
+        ssl_context = ssl.create_default_context()
+
+    class _SSLContextAdapter(requests.adapters.HTTPAdapter):
+        def init_poolmanager(self, *args, **kwargs):
+            kwargs["ssl_context"] = ssl_context
+            return super().init_poolmanager(*args, **kwargs)
+
+    pool_size = max(int(globals().get("WALLET_FETCH_MAX_WORKERS", 10) or 10), 20)
+
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    })
+    session.mount("https://", _SSLContextAdapter(pool_connections=pool_size, pool_maxsize=pool_size))
+    return session
+
+
+def _get_pooled_http_session():
+    global _HTTP_SESSION
+    if _HTTP_SESSION is None:
+        with _HTTP_SESSION_LOCK:
+            if _HTTP_SESSION is None:
+                _HTTP_SESSION = _build_pooled_http_session()
+    return _HTTP_SESSION
+
+
 def fetch_json_url(url):
+    # Fast path: reuse a pooled HTTPS connection instead of a fresh
+    # TCP+TLS handshake per call. On any failure, falls through to the
+    # original per-call urllib logic below unchanged.
+    try:
+        session = _get_pooled_http_session()
+        response = session.get(url, timeout=8)
+        response.raise_for_status()
+        return response.json()
+    except Exception as e:
+        last_error = e
+
     req = urllib.request.Request(
         url,
         headers={
@@ -1291,14 +1355,12 @@ def fetch_json_url(url):
         },
     )
 
-    last_error = None
-
     if TRUSTSTORE_INJECTED:
         try:
             ssl_context = ssl.create_default_context()
             with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                 raw = response.read().decode("utf-8")
-            return json.loads(raw)
+                return json.loads(raw)
         except Exception as e:
             last_error = e
 
@@ -1309,7 +1371,7 @@ def fetch_json_url(url):
             ssl_context = ssl.create_default_context(cafile=bundle_path)
             with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
                 raw = response.read().decode("utf-8")
-            return json.loads(raw)
+                return json.loads(raw)
         except Exception as e:
             last_error = e
 
@@ -1317,7 +1379,7 @@ def fetch_json_url(url):
         ssl_context = ssl.create_default_context()
         with urllib.request.urlopen(req, timeout=8, context=ssl_context) as response:
             raw = response.read().decode("utf-8")
-        return json.loads(raw)
+            return json.loads(raw)
     except Exception as e:
         last_error = e
 
