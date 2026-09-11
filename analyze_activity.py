@@ -182,7 +182,7 @@ HOURS_LOOKBACK = 6
 POLL_SECONDS = 2
 
 LEADERBOARD_WALLET_LIMIT = 50
-LEADERBOARD_WALLET_OFFSETS = [0]
+LEADERBOARD_WALLET_OFFSETS = [0, 50, 100, 150]
 
 TRACKED_WALLETS = []
 WALLET_WEIGHTS = {}
@@ -197,6 +197,13 @@ POSITION_REFRESH_EVERY_N_CYCLES = 10
 DEEP_DEBUG_EVERY_N_CYCLES = 999999
 HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
 ACTIVITY_BUCKET_COUNT = 2
+
+# Wallet activity/position fetches are one blocking HTTP call each. They are
+# independent of each other, so fetch them concurrently instead of one at a
+# time - this only changes how fast the same data arrives, not what data is
+# used or how it is scored.
+WALLET_FETCH_MAX_WORKERS = 50
+
 RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
 
@@ -2472,6 +2479,20 @@ def format_wallet_record(wallet_result_rows, wallet):
     if not wallet:
         return "No tracked history"
 
+    # Pull this wallet's own tracked-bet ROI (dollar-weighted, so plus-money
+    # wins count for more than a flat win/loss tally would show).
+    roi_suffix = ""
+    try:
+        wallet_guardrails = load_wallet_performance_guardrails()
+        guardrail = wallet_guardrails.get(wallet) if isinstance(wallet_guardrails, dict) else None
+        if isinstance(guardrail, dict):
+            roi = guardrail.get("roi")
+            guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
+            if roi is not None and guardrail_resolved > 0:
+                roi_suffix = f" | ROI: {round(float(roi), 1)}% (n={guardrail_resolved})"
+    except Exception:
+        roi_suffix = ""
+
     # Prefer the latest in-memory wallet_profiles data first.
     # This is more current than wallet_result_rows and avoids stale alert records.
     profile = {}
@@ -2488,7 +2509,7 @@ def format_wallet_record(wallet_result_rows, wallet):
 
         if resolved_bets > 0:
             win_pct = round((resolved_wins / resolved_bets) * 100, 1)
-            return f"{resolved_wins}-{resolved_losses} ({win_pct}%)"
+            return f"{resolved_wins}-{resolved_losses} ({win_pct}%){roi_suffix}"
 
     # Fall back to wallet_result_rows snapshot if needed.
     if isinstance(wallet_result_rows, list):
@@ -2506,12 +2527,11 @@ def format_wallet_record(wallet_result_rows, wallet):
 
             if resolved > 0:
                 win_pct = round((wins / resolved) * 100, 1)
-                return f"{wins}-{losses} ({win_pct}%)"
+                return f"{wins}-{losses} ({win_pct}%){roi_suffix}"
             if tracked_bets > 0:
-                return "Tracked - no resolved bets"
+                return f"Tracked - no resolved bets{roi_suffix}"
             return "No tracked history"
 
-    return "No tracked history"
     return "No tracked history"
 
 def filter_active_wallets(wallet_profiles):
