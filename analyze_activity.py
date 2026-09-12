@@ -197,7 +197,7 @@ CACHED_POSITION_LOOKUP = {}
 POSITION_REFRESH_EVERY_N_CYCLES = 10
 DEEP_DEBUG_EVERY_N_CYCLES = 999999
 HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
-ACTIVITY_BUCKET_COUNT = 2
+ACTIVITY_BUCKET_COUNT = 1
 
 # Wallet activity/position fetches are one blocking HTTP call each. They are
 # independent of each other, so fetch them concurrently instead of one at a
