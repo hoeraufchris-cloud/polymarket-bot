@@ -9661,6 +9661,8 @@ if __name__ == "__main__":
                             f"reason={execution_skip_reason}"
                         )
 
+                    lag_seconds = int(time.time()) - int(alert_g.get("last_timestamp", 0) or 0)
+                    print(f"[LATENCY] wallet={alert_g.get('wallet')} market={alert_g.get('slug')} lag_seconds={lag_seconds}")
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
