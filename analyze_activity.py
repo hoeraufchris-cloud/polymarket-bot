@@ -160,6 +160,7 @@ def make_market_outcome_key(g):
     return f"{slug}||{outcome}"
 
 last_export_day = None
+last_tracked_bet_resolution_bucket = None
 from collections import defaultdict
 from market_model import (
     build_recommendations,
@@ -249,6 +250,7 @@ ALL_BET_SIGNALS_SHEET_GID = os.environ.get(
     "15359334",
 )
 TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 6 * 60 * 60
+TRACKED_BET_RESOLUTION_INTERVAL_SECONDS = 60
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
 BET_ALERT_MIN_NEW_SHARP_STAKE = 1000
@@ -8877,12 +8879,17 @@ if __name__ == "__main__":
         run_heavy_postprocess = (MAIN_LOOP_CYCLE_COUNT % HEAVY_POSTPROCESS_EVERY_N_CYCLES == 0)
 
         try:
-            preload_tracked_bet_summary = update_tracked_bet_results(
-                tracked_bets,
-                int(time.time()),
+            current_tracked_bet_resolution_bucket = int(
+                time.time() // TRACKED_BET_RESOLUTION_INTERVAL_SECONDS
             )
-            if preload_tracked_bet_summary.get("newly_resolved", 0) > 0:
-                save_tracked_bets(tracked_bets)
+            if last_tracked_bet_resolution_bucket != current_tracked_bet_resolution_bucket:
+                preload_tracked_bet_summary = update_tracked_bet_results(
+                    tracked_bets,
+                    int(time.time()),
+                )
+                if preload_tracked_bet_summary.get("newly_resolved", 0) > 0:
+                    save_tracked_bets(tracked_bets)
+                last_tracked_bet_resolution_bucket = current_tracked_bet_resolution_bucket
 
             wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
             result = run_pipeline(
