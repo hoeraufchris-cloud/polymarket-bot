@@ -9669,7 +9669,8 @@ if __name__ == "__main__":
                         )
 
                     lag_seconds = int(time.time()) - int(alert_g.get("last_timestamp", 0) or 0)
-                    print(f"[LATENCY] wallet={alert_g.get('wallet')} market={alert_g.get('slug')} lag_seconds={lag_seconds}")
+                    is_position_refresh_cycle = (PIPELINE_CYCLE_COUNT % POSITION_REFRESH_EVERY_N_CYCLES == 0)
+                    print(f"[LATENCY] wallet={alert_g.get('wallet')} market={alert_g.get('slug')} lag_seconds={lag_seconds} cycle={PIPELINE_CYCLE_COUNT} pos_refresh_cycle={is_position_refresh_cycle}")
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
