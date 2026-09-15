@@ -111,6 +111,8 @@ def track_model_recommendation(recommendation, now_ts):
 import time
 import requests
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import urllib.request
 import urllib.parse
 import re
@@ -195,7 +197,8 @@ ACTIVE_WALLET_MAX_FAILURES = 3
 PIPELINE_CYCLE_COUNT = 0
 CACHED_POSITIONS = []
 CACHED_POSITION_LOOKUP = {}
-POSITION_REFRESH_EVERY_N_CYCLES = 10
+POSITION_REFRESH_INTERVAL_SECONDS = 300
+_POSITION_CACHE_LOCK = threading.Lock()
 DEEP_DEBUG_EVERY_N_CYCLES = 999999
 HEAVY_POSTPROCESS_EVERY_N_CYCLES = 999999
 ACTIVITY_BUCKET_COUNT = 2
@@ -2304,6 +2307,50 @@ def is_actionable_accumulation_group(group):
         return False
     avg_price = float(group.get("avg_trade_price", 0) or 0)
     return 0.05 <= avg_price <= 0.95
+
+
+def _position_refresh_worker():
+    global CACHED_POSITIONS
+    global CACHED_POSITION_LOOKUP
+
+    while True:
+        try:
+            positions = []
+
+            with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
+                future_to_wallet = {
+                    executor.submit(load_positions, wallet): wallet
+                    for wallet in TRACKED_WALLETS
+                }
+                for future in as_completed(future_to_wallet):
+                    wallet = future_to_wallet[future]
+                    try:
+                        wallet_positions = future.result()
+                        positions.extend(wallet_positions)
+                    except Exception as e:
+                        print(f"[Position fetch error] {wallet} -> {repr(e)}")
+
+            new_lookup = build_position_lookup(positions)
+            with _POSITION_CACHE_LOCK:
+                CACHED_POSITIONS = positions
+                CACHED_POSITION_LOOKUP = new_lookup
+            print(
+                f"[Positions] Background refresh completed "
+                f"(rows={len(CACHED_POSITIONS)})"
+            )
+        except Exception as e:
+            print(f"[Position background refresh error] {repr(e)}")
+
+        time.sleep(POSITION_REFRESH_INTERVAL_SECONDS)
+
+
+def _start_position_refresh_thread():
+    thread = threading.Thread(target=_position_refresh_worker, daemon=True)
+    thread.start()
+    print(
+        f"[Positions] Background refresh thread started "
+        f"(interval={POSITION_REFRESH_INTERVAL_SECONDS}s)"
+    )
 
 
 def load_positions(user_wallet: str):
@@ -7522,32 +7569,14 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
 
         real_candidates.append(g)
 
-    should_refresh_positions = (
-        not CACHED_POSITION_LOOKUP
-        or PIPELINE_CYCLE_COUNT % POSITION_REFRESH_EVERY_N_CYCLES == 0
+    # Position refresh now runs on its own background thread
+    # (_position_refresh_worker / _start_position_refresh_thread) so it
+    # never blocks this cycle's scoring/alerting. This cycle just reads
+    # whatever the background thread most recently produced.
+    print(
+        f"[Positions] Using background-refreshed cache "
+        f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
     )
-
-    if should_refresh_positions:
-        positions = []
-
-        for wallet in TRACKED_WALLETS:
-            try:
-                wallet_positions = load_positions(wallet)
-                positions.extend(wallet_positions)
-            except Exception as e:
-                print(f"[Position fetch error] {wallet} -> {repr(e)}")
-
-        CACHED_POSITIONS = positions
-        CACHED_POSITION_LOOKUP = build_position_lookup(positions)
-        print(
-            f"[Positions] Refreshed this cycle "
-            f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
-        )
-    else:
-        print(
-            f"[Positions] Reusing cached positions "
-            f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
-        )
 
     position_lookup = CACHED_POSITION_LOOKUP
     fair_price_lookup = build_fair_price_lookup(accumulation_groups)
@@ -8852,6 +8881,7 @@ if __name__ == "__main__":
     print(f"Loaded signal stage tracker rows: {len(signal_stage_tracker)}")
     wallet_profiles = init_wallet_profiles(TRACKED_WALLETS)
     enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows)
+    _start_position_refresh_thread()
 
     # --- optional test alert ---
     if PUSHOVER_TEST_ALERT:
@@ -9669,8 +9699,7 @@ if __name__ == "__main__":
                         )
 
                     lag_seconds = int(time.time()) - int(alert_g.get("last_timestamp", 0) or 0)
-                    is_position_refresh_cycle = (PIPELINE_CYCLE_COUNT % POSITION_REFRESH_EVERY_N_CYCLES == 0)
-                    print(f"[LATENCY] wallet={alert_g.get('wallet')} market={alert_g.get('slug')} lag_seconds={lag_seconds} cycle={PIPELINE_CYCLE_COUNT} pos_refresh_cycle={is_position_refresh_cycle}")
+                    print(f"[LATENCY] wallet={alert_g.get('wallet')} market={alert_g.get('slug')} lag_seconds={lag_seconds} cycle={PIPELINE_CYCLE_COUNT}")
                     send_pushover_bet_alert(alert_g)
                     new_bet_alerts.append(alert_g)
 
