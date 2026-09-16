@@ -689,6 +689,16 @@ def build_execution_slug_candidates(market_slug):
 
 
 
+    # Ground-truth confirmed 2026-09-16 via live API inspection: Polymarket
+    # US's moneyline market slug for these leagues is "aec-" + the feed's
+    # event slug, teams in the SAME order (no reversal needed) -- e.g. feed
+    # slug "mlb-nyy-min-2026-09-16" maps directly to the real tradable
+    # market slug "aec-mlb-nyy-min-2026-09-16". Try that first.
+    add_candidate("aec-" + slug)
+
+
+
+
     team_parts = parts[1:date_index]
     date_parts = parts[date_index:date_index + 3]
     suffix_parts = parts[date_index + 3:]
@@ -715,6 +725,7 @@ def build_execution_slug_candidates(market_slug):
 
 
     add_candidate(convert_feed_slug_to_us_slug(reversed_feed_slug))
+    add_candidate("aec-" + reversed_feed_slug)
 
 
 
