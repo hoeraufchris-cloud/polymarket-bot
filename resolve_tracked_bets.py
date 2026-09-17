@@ -369,6 +369,17 @@ def main():
             failed += 1
             continue
 
+
+        if bool(bet.get("resolved")) and bet.get("result") in ("WIN", "LOSS"):
+            # Already resolved with a definitive result from a prior run --
+            # skip the network lookup entirely. Without this, every 6-hour
+            # resolve/export cycle re-fetches EVERY historical bet's market,
+            # growing unboundedly as tracked_bets.json grows. Confirmed
+            # 2026-09-17: this caused a ~47-minute stall in the main
+            # alert/order loop, which runs this script synchronously via
+            # subprocess.run(..., check=True).
+            continue
+
         try:
             if slug not in slug_cache:
                 slug_cache[slug] = fetch_market_by_slug(slug)
