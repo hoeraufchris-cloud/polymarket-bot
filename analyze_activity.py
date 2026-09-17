@@ -540,6 +540,8 @@ def apply_phase_sequence_score_adjustment(score, g):
     return max(0, adjusted_score)
 
 _WALLET_PERFORMANCE_GUARDRAIL_CACHE = None
+_WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = 0.0
+WALLET_GUARDRAIL_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 
 def _wallet_guardrail_float(value, default=0.0):
@@ -632,20 +634,25 @@ def ensure_all_bet_signals_csv_available():
 
 
 def load_wallet_performance_guardrails():
-    global _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+    global _WALLET_PERFORMANCE_GUARDRAIL_CACHE, _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
 
     if _WALLET_PERFORMANCE_GUARDRAIL_CACHE is not None:
-        return _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+        age_seconds = time.time() - _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS
+        if age_seconds < WALLET_GUARDRAIL_CACHE_TTL_SECONDS:
+            return _WALLET_PERFORMANCE_GUARDRAIL_CACHE
+        print(f"[WALLET GUARDRAILS] in_memory_cache_stale age_seconds={age_seconds:.1f} ttl_seconds={WALLET_GUARDRAIL_CACHE_TTL_SECONDS} -- reloading")
 
     guardrails = {}
 
     if not WALLET_GUARDRAILS_ENABLED:
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
         return guardrails
 
     if not ensure_all_bet_signals_csv_available():
         print(f"[WALLET GUARDRAILS] no_csv_found path={ALL_BET_SIGNALS_CSV_PATH}")
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
         return guardrails
 
     wallet_rows = {}
@@ -721,6 +728,7 @@ def load_wallet_performance_guardrails():
     except Exception as e:
         print(f"[WALLET GUARDRAIL LOAD ERROR] path={ALL_BET_SIGNALS_CSV_PATH} error={repr(e)}")
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+        _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
         return guardrails
 
     for wallet, stats in wallet_rows.items():
@@ -795,6 +803,7 @@ def load_wallet_performance_guardrails():
     )
 
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
+    _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
     return guardrails
 
 def apply_sharp_entry_proxy_edge(g):
