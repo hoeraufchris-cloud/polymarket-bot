@@ -5174,6 +5174,7 @@ def record_tracked_bet(g, tracked_bets, now_ts):
         "event_start_time": g.get("event_start_time"),
         "market_phase": g.get("market_phase"),
         "reason": str(g.get("reason", "") or "").strip(),
+        "sport": get_signal_sport_bucket(g),
         "resolved": False,
         "result": None,
         "winning_outcome": None,
