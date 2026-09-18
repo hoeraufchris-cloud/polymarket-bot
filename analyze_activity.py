@@ -579,16 +579,6 @@ def _wallet_guardrail_is_resolved(value):
 
 
 def ensure_all_bet_signals_csv_available():
-    if os.path.exists(ALL_BET_SIGNALS_CSV_PATH):
-        return True
-
-    if not ALL_BET_SIGNALS_SHEET_ID or not ALL_BET_SIGNALS_SHEET_GID:
-        print(
-            "[WALLET GUARDRAILS] no_csv_found_and_sheet_config_missing "
-            f"path={ALL_BET_SIGNALS_CSV_PATH}"
-        )
-        return False
-
     csv_url = (
         f"https://docs.google.com/spreadsheets/d/{ALL_BET_SIGNALS_SHEET_ID}/export"
         f"?format=csv&gid={ALL_BET_SIGNALS_SHEET_GID}"
@@ -599,7 +589,6 @@ def ensure_all_bet_signals_csv_available():
         response.raise_for_status()
 
         content_text = response.text or ""
-
         csv_preview = content_text[:500]
 
         if (
@@ -745,7 +734,6 @@ def load_wallet_performance_guardrails():
         losses = int(stats.get("losses", 0) or 0)
         graded_results = wins + losses
 
-
         # Summary rows from the 2D Wallet sheet contain resolved bets,
         # profit, and ROI, but do not contain win/loss counts.
         # Only calculate win rate when actual graded result counts exist.
@@ -805,7 +793,6 @@ def load_wallet_performance_guardrails():
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
     return guardrails
-
 def apply_sharp_entry_proxy_edge(g):
     if not SHARP_ENTRY_PROXY_EDGE_ENABLED:
         return g
@@ -2055,81 +2042,6 @@ def group_accumulation_candidates(trades):
 
 def build_fair_price_lookup(accumulation_groups):
     fair_price_lookup = {}
-    grouped = defaultdict(list)
-
-    for g in accumulation_groups:
-        if not isinstance(g, dict):
-            continue
-
-        slug = str(g.get("slug", "") or "")
-        outcome = str(g.get("outcome", "") or "")
-        if not slug or not outcome:
-            continue
-
-        grouped[(slug, outcome)].append(g)
-
-    for key, rows in grouped.items():
-        total_weight = 0.0
-        weighted_price_sum = 0.0
-
-        for row in rows:
-            try:
-                price = float(row.get("avg_trade_price", 0) or 0)
-                size = float(row.get("total_size", 0) or 0)
-            except Exception:
-                continue
-
-            if price <= 0 or size <= 0:
-                continue
-
-            weighted_price_sum += price * size
-            total_weight += size
-
-        if total_weight > 0:
-            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
-
-    return fair_price_lookup
-
-
-def build_fair_price_lookup(accumulation_groups):
-    fair_price_lookup = {}
-    grouped = defaultdict(list)
-
-    for g in accumulation_groups:
-        if not isinstance(g, dict):
-            continue
-
-        slug = str(g.get("slug", "") or "")
-        outcome = str(g.get("outcome", "") or "")
-        if not slug or not outcome:
-            continue
-
-        grouped[(slug, outcome)].append(g)
-
-    for key, rows in grouped.items():
-        total_weight = 0.0
-        weighted_price_sum = 0.0
-
-        for row in rows:
-            try:
-                price = float(row.get("avg_trade_price", 0) or 0)
-                size = float(row.get("total_size", 0) or 0)
-            except Exception:
-                continue
-
-            if price <= 0 or size <= 0:
-                continue
-
-            weighted_price_sum += price * size
-            total_weight += size
-
-        if total_weight > 0:
-            fair_price_lookup[key] = round(weighted_price_sum / total_weight, 6)
-
-    return fair_price_lookup
-
-def build_fair_price_lookup(accumulation_groups):
-    fair_price_lookup = {}
 
     grouped = defaultdict(list)
     for g in accumulation_groups:
@@ -2640,19 +2552,22 @@ def format_wallet_record(wallet_result_rows, wallet):
             if row_wallet != wallet:
                 continue
 
+
             wins = int(row.get("wins", 0) or 0)
             losses = int(row.get("losses", 0) or 0)
             resolved = int(row.get("resolved", 0) or 0)
             tracked_bets = int(row.get("tracked_bets", 0) or 0)
+
 
             if resolved > 0:
                 win_pct = round((wins / resolved) * 100, 1)
                 return f"{wins}-{losses} ({win_pct}%){roi_suffix}"
             if tracked_bets > 0:
                 return f"Tracked - no resolved bets{roi_suffix}"
-            return "No tracked history"
+            return f"No local tracked history{roi_suffix}"
 
-    return "No tracked history"
+
+    return f"No local tracked history{roi_suffix}"
 
 def filter_active_wallets(wallet_profiles):
     filtered = []
@@ -6703,86 +6618,7 @@ def store_bet_alert(g, alerted_bets, now_ts):
         "buy_count": g.get("buy_count", 0),
         "followers": get_follower_count(g),
     }
-    
-def resolve_same_market_bet_conflicts(scored_candidates):
-    grouped = defaultdict(list)
-
-    for g in scored_candidates:
-        if not isinstance(g, dict):
-            continue
-        slug = str(g.get("slug", "") or "").strip()
-        if not slug:
-            continue
-        grouped[slug].append(g)
-
-    resolved = []
-
-    for slug, candidates in grouped.items():
-        bet_candidates = [
-            g for g in candidates
-            if str(g.get("label", "") or "").upper() == "BET"
-        ]
-
-        if len(bet_candidates) <= 1:
-            resolved.extend(candidates)
-            continue
-
-        def bet_rank(g):
-            try:
-                score = float(g.get("score", 0) or 0)
-            except Exception:
-                score = 0.0
-
-            try:
-                edge_pct = float(g.get("edge_pct", 0) or 0)
-            except Exception:
-                edge_pct = 0.0
-
-            try:
-                market_movement_abs = abs(float(g.get("market_movement_cents", 999) or 999))
-            except Exception:
-                market_movement_abs = 999.0
-
-            try:
-                size_ratio = float(g.get("size_ratio", 0) or 0)
-            except Exception:
-                size_ratio = 0.0
-
-            try:
-                total_size = float(g.get("total_size", 0) or 0)
-            except Exception:
-                total_size = 0.0
-
-            return (
-                score,
-                edge_pct,
-                -market_movement_abs,
-                size_ratio,
-                total_size,
-            )
-
-        winning_bet = max(bet_candidates, key=bet_rank)
-
-        for g in candidates:
-            if g is winning_bet:
-                resolved.append(g)
-                continue
-
-            if str(g.get("label", "") or "").upper() == "BET":
-                g = dict(g)
-                old_reason = str(g.get("reason", "") or "")
-                g["label"] = "PASS"
-                g["score"] = 0
-                g["stake_pct"] = 0
-                g["reason"] = (
-                    f"{old_reason} | Rejected by same-market BET conflict "
-                    f"(kept outcome={winning_bet.get('outcome', '')})"
-                )
-
-            resolved.append(g)
-
-    return resolved
-
+   
 def resolve_same_market_bet_conflicts(scored_candidates):
     grouped = defaultdict(list)
 
@@ -8606,13 +8442,13 @@ def send_pushover_bet_alert(g):
             f"Source: {INSTANCE_LABEL}\n"
             f"{phase_label} | {market_text}\n"
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
+            f"Wallet: {wallet_short} | Record: {wallet_record}\n"
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
-            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}\n"
             f"Est Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
-            f"Wallet: {wallet_short} | Record: {wallet_record}"
+            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}"
         )
 
         if len(alert_body) > 950:
