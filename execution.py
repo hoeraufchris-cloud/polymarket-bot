@@ -540,6 +540,8 @@ def convert_feed_slug_to_us_slug(market_slug):
     converted = converted.replace("-sas-", "-sa-")
     converted = converted.replace("mlb-oak-", "mlb-ath-")
     converted = converted.replace("-oak-", "-ath-")
+    converted = converted.replace("mlb-ari-", "mlb-az-")
+    converted = converted.replace("-ari-", "-az-")
 
     if converted.startswith(("aec-", "tsc-", "atc-", "asc-")):
         return converted
@@ -694,7 +696,7 @@ def build_execution_slug_candidates(market_slug):
     # event slug, teams in the SAME order (no reversal needed) -- e.g. feed
     # slug "mlb-nyy-min-2026-09-16" maps directly to the real tradable
     # market slug "aec-mlb-nyy-min-2026-09-16". Try that first.
-    add_candidate("aec-" + slug)
+    add_candidate("aec-" + converted_slug)
 
 
 
@@ -725,7 +727,7 @@ def build_execution_slug_candidates(market_slug):
 
 
     add_candidate(convert_feed_slug_to_us_slug(reversed_feed_slug))
-    add_candidate("aec-" + reversed_feed_slug)
+    add_candidate("aec-" + convert_feed_slug_to_us_slug(reversed_feed_slug))
 
 
 
