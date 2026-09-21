@@ -365,6 +365,10 @@ WALLET_GUARDRAIL_CAP_STAKE_PCT = 40
 WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED = 100
 WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 
+# Minimum resolved tracked bets before showing this wallet's ROI in alert text at all.
+# Below this, ROI is too noisy to be meaningful (e.g. a 1-0 record is 0% or -100%).
+WALLET_ROI_DISPLAY_MIN_RESOLVED = 10
+
 TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
 TRUSTED_NO_EDGE_AUTO_BET_MAX_USD = 1
 TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 78
@@ -2520,7 +2524,7 @@ def format_wallet_record(wallet_result_rows, wallet):
         if isinstance(guardrail, dict):
             roi = guardrail.get("roi")
             guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
-            if roi is not None and guardrail_resolved > 0:
+            if roi is not None and guardrail_resolved >= WALLET_ROI_DISPLAY_MIN_RESOLVED:
                 roi_suffix = f" | ROI: {round(float(roi), 1)}% (n={guardrail_resolved})"
     except Exception:
         roi_suffix = ""
