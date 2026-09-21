@@ -541,6 +541,8 @@ def convert_feed_slug_to_us_slug(market_slug):
     converted = converted.replace("-sas-", "-sa-")
     converted = converted.replace("mlb-oak-", "mlb-ath-")
     converted = converted.replace("-oak-", "-ath-")
+    converted = converted.replace("mlb-ari-", "mlb-az-")
+    converted = converted.replace("-ari-", "-az-")
 
     if converted.startswith(("aec-", "tsc-", "atc-", "asc-")):
         return converted
@@ -644,6 +646,13 @@ def build_execution_slug_candidates(market_slug):
 
 
 
+    # Ground-truth confirmed 2026-09-16 via live API inspection: Polymarket
+    # US's moneyline market slug for these leagues is "aec-" + the feed's
+    # event slug, teams in the SAME order (no reversal needed) -- e.g. feed
+    # slug "mlb-nyy-min-2026-09-16" maps directly to the real tradable
+    # market slug "aec-mlb-nyy-min-2026-09-16". Try that first.
+    add_candidate("aec-" + converted_slug)
+
     parts = slug.split("-")
     if len(parts) < 6:
         return candidates
@@ -706,8 +715,32 @@ def build_execution_slug_candidates(market_slug):
     team_a = team_parts[0]
     team_b = team_parts[1]
 
+    # Feed spread slugs look like "mlb-mia-sd-2026-09-18-spread-home-1pt5"
+    # or "...-spread-away-1pt5". Polymarket's real spread markets have no
+    # home/away concept -- they expose one "asc-" market per magnitude,
+    # named "-pos-X" or "-neg-X" depending on which team that magnitude
+    # favors. Confirmed empirically 2026-09-18: for a given game and
+    # magnitude, only ONE of pos-X/neg-X ever exists as a real market, so
+    # trying both (and both team orders) is safe -- whichever preview
+    # succeeds wins, and the existing outcome-text-matching side logic
+    # elsewhere in this file already picks the correct long/short side
+    # once the right market is found. We deliberately do NOT try to
+    # compute or guess the sign here.
+    if suffix_parts and suffix_parts[0] == "spread" and len(suffix_parts) >= 2:
+        spread_magnitude = suffix_parts[-1]
 
+        if spread_magnitude:
+            event_slug = "-".join([league, team_a, team_b] + list(date_parts))
+            event_slug_converted = convert_feed_slug_to_us_slug(event_slug)
+            add_candidate("asc-" + event_slug_converted + "-pos-" + spread_magnitude)
+            add_candidate("asc-" + event_slug_converted + "-neg-" + spread_magnitude)
 
+            reversed_event_slug = "-".join([league, team_b, team_a] + list(date_parts))
+            reversed_event_slug_converted = convert_feed_slug_to_us_slug(reversed_event_slug)
+            add_candidate("asc-" + reversed_event_slug_converted + "-pos-" + spread_magnitude)
+            add_candidate("asc-" + reversed_event_slug_converted + "-neg-" + spread_magnitude)
+
+        return candidates
 
     reversed_feed_slug_parts = [league, team_b, team_a] + date_parts + suffix_parts
     reversed_feed_slug = "-".join(reversed_feed_slug_parts)
@@ -716,6 +749,7 @@ def build_execution_slug_candidates(market_slug):
 
 
     add_candidate(convert_feed_slug_to_us_slug(reversed_feed_slug))
+    add_candidate("aec-" + convert_feed_slug_to_us_slug(reversed_feed_slug))
 
 
 
