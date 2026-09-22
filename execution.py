@@ -9,6 +9,7 @@ def save_json_atomic(path, data, **dump_kwargs):
     os.replace(tmp_path, path)
 import time
 from decimal import Decimal, ROUND_DOWN
+from datetime import date, timedelta
 
 ENABLE_REAL_MONEY_ORDERS = os.getenv("ENABLE_REAL_MONEY_ORDERS", "false").lower() == "true"
 POLYMARKET_KEY_ID = os.getenv("POLYMARKET_KEY_ID")
@@ -602,7 +603,120 @@ def convert_feed_slug_to_us_slug(market_slug):
 
     return converted
 
+def _shift_date_in_slug(slug, delta_days):
+    """Return `slug` with its embedded YYYY-MM-DD date shifted by
+    `delta_days`, or None if no date pattern is found / it doesn't parse.
+
+    Ground-truth confirmed 2026-09-22 via live API inspection: Polymarket
+    US slugs a game by its US-Eastern calendar date, while our feed's slug
+    is sometimes built from the UTC date instead. For a game that starts
+    late enough ET to cross into the next UTC day (e.g. Sunday Night
+    Football), that makes the feed's date exactly one day ahead of
+    Polymarket's real slug date -- confirmed directly: feed slug
+    "nfl-nyg-la-2026-09-22" corresponds to the real, live Polymarket US
+    market "aec-nfl-nyg-lar-2026-09-21".
+    """
+    parts = slug.split("-")
+
+    for i in range(len(parts) - 2):
+        if (
+            len(parts[i]) == 4
+            and parts[i].isdigit()
+            and len(parts[i + 1]) == 2
+            and parts[i + 1].isdigit()
+            and len(parts[i + 2]) == 2
+            and parts[i + 2].isdigit()
+        ):
+            try:
+                original_date = date(int(parts[i]), int(parts[i + 1]), int(parts[i + 2]))
+            except ValueError:
+                continue
+
+            shifted_date = original_date + timedelta(days=delta_days)
+
+            new_parts = list(parts)
+            new_parts[i] = f"{shifted_date.year:04d}"
+            new_parts[i + 1] = f"{shifted_date.month:02d}"
+            new_parts[i + 2] = f"{shifted_date.day:02d}"
+
+            return "-".join(new_parts)
+
+    return None
+
+
+def _nfl_team_code_variants(slug):
+    """NFL feed slugs sometimes use a bare "la" team code, which is
+    ambiguous between the Rams ("lar") and Chargers ("lac"). Polymarket US
+    never uses bare "la" -- confirmed empirically 2026-09-22: the real,
+    live market for a Giants @ "la" game is
+    "aec-nfl-nyg-lar-2026-09-21" (Rams), never "aec-nfl-nyg-la-...".
+    Try both team codes whenever the feed slug has an ambiguous "la" token.
+    """
+    if not slug.startswith("nfl-"):
+        return [slug]
+
+    parts = slug.split("-")
+
+    if "la" not in parts:
+        return [slug]
+
+    variants = [slug]
+
+    for i, token in enumerate(parts):
+        if token != "la":
+            continue
+
+        for replacement in ("lar", "lac"):
+            new_parts = list(parts)
+            new_parts[i] = replacement
+            variants.append("-".join(new_parts))
+
+    return variants
+
+
 def build_execution_slug_candidates(market_slug):
+    """Build the full list of Polymarket US slug candidates to try for a
+    feed market slug.
+
+    This is a thin wrapper around `_build_execution_slug_candidates_core`:
+    it first expands any ambiguous NFL "la" team code into both real
+    candidates ("lar"/"lac"), runs the core slug-building logic on each
+    variant, and then -- since Polymarket US and our feed can disagree on
+    the calendar date for late-night games near the UTC day boundary --
+    also tries every resulting candidate with its date shifted by one day
+    in each direction. Original (unshifted, un-disambiguated) candidates
+    are always tried first so behavior for already-correct slugs doesn't
+    change.
+    """
+    slug = str(market_slug or "").strip().lower()
+
+    if not slug:
+        return []
+
+    candidates = []
+
+    def add_all(new_candidates):
+        for candidate in new_candidates:
+            candidate = str(candidate or "").strip().lower()
+            if candidate and candidate not in candidates:
+                candidates.append(candidate)
+
+    for slug_variant in _nfl_team_code_variants(slug):
+        add_all(_build_execution_slug_candidates_core(slug_variant))
+
+    date_shifted_candidates = []
+    for candidate in list(candidates):
+        for delta_days in (-1, 1):
+            shifted = _shift_date_in_slug(candidate, delta_days)
+            if shifted:
+                date_shifted_candidates.append(shifted)
+
+    add_all(date_shifted_candidates)
+
+    return candidates
+
+
+def _build_execution_slug_candidates_core(market_slug):
     slug = str(market_slug or "").strip().lower()
 
 
