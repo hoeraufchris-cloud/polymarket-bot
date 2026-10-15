@@ -23,12 +23,16 @@ ALLOW_NON_RAILWAY_TRACKED_BET_IO = str(
     os.environ.get("ALLOW_NON_RAILWAY_TRACKED_BET_IO", "") or ""
 ).strip().lower() in {"1", "true", "yes"}
 
-INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
-OUTPUT_FILE = "tracked_bets_export.csv"
+INPUT_FILE = os.environ.get("EXPORT_INPUT_FILE") or os.path.join(DATA_DIR, "tracked_bets.json")
+SHADOW_MODE = str(os.environ.get("EXPORT_SHADOW_MODE", "") or "").strip() == "1"
+CLV_TRACKER_FILE = os.path.join(DATA_DIR, "clv_tracker.json")
+SNAPSHOT_CLV_COLUMN = "AD"
+OUTPUT_FILE = "shadow_bets_export.csv" if SHADOW_MODE else "tracked_bets_export.csv"
 SERVICE_ACCOUNT_FILE = "service_account.json"
 SERVICE_ACCOUNT_JSON_ENV = "GOOGLE_SERVICE_ACCOUNT_JSON"
 SPREADSHEET_ID = "11JsBWkSWN5RTEnaEQx9uUJzEjNt9aeIU43gPoxfkYLY"
-SHEET_NAME = "Sheet1"
+SHEET_NAME = os.environ.get("EXPORT_SHEET_NAME") or "Sheet1"
+LAST_COL = "V" if SHADOW_MODE else "U"
 
 
 RAW_HEADERS = [
@@ -54,6 +58,8 @@ RAW_HEADERS = [
     "Result",
     "Winning Outcome",
 ]
+if SHADOW_MODE:
+    RAW_HEADERS = RAW_HEADERS + ["Shadow Reason"]
 
 
 def load_tracked_bets():
@@ -64,6 +70,37 @@ def load_tracked_bets():
         raise ValueError("tracked_bets.json must contain a top-level JSON object.")
 
     return data
+
+
+def load_clv_tracker():
+    try:
+        with open(CLV_TRACKER_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def get_snapshot_clv_cents(bet, clv_tracker):
+    """Frozen 5-minute snapshot CLV in cents (positive = price rose after the alert)."""
+    slug = str(bet.get("slug", "") or "").strip()
+    outcome = str(bet.get("outcome", "") or "").strip()
+    wallet = str(bet.get("wallet", "") or "").strip().lower()
+    if not slug or not outcome or not wallet:
+        return None
+
+    entry = clv_tracker.get(f"{slug}||{outcome}||{wallet}")
+    if not isinstance(entry, dict):
+        return None
+
+    frozen = entry.get("snapshot_clv_frozen")
+    if frozen is None:
+        return None
+
+    try:
+        return round(float(frozen) * 100, 2)
+    except (TypeError, ValueError):
+        return None
 
 
 def normalize_date(value):
@@ -95,6 +132,13 @@ def dedupe_bets(bets):
 
 
 def to_row(bet):
+    row = _to_row_base(bet)
+    if SHADOW_MODE:
+        row["Shadow Reason"] = bet.get("shadow_reason", "")
+    return row
+
+
+def _to_row_base(bet):
     return {
         "Date": normalize_date(bet.get("alert_ts")),
         "Market": bet.get("market", ""),
@@ -176,7 +220,8 @@ def load_google_sheets_credentials(scopes):
     )
 
 
-def push_to_google_sheets(rows):
+def push_to_google_sheets(rows, snapshot_clv_by_row_key=None):
+    snapshot_clv_by_row_key = snapshot_clv_by_row_key or {}
     print("=== GOOGLE SHEETS PUSH START ===")
     print(f"Spreadsheet ID: {SPREADSHEET_ID}")
     print(f"Sheet name: {SHEET_NAME}")
@@ -198,7 +243,7 @@ def push_to_google_sheets(rows):
     # Ensure raw-data headers exist in row 1
     sheet.values().update(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"{SHEET_NAME}!A1:U1",
+        range=f"{SHEET_NAME}!A1:{LAST_COL}1",
         valueInputOption="RAW",
         body={"values": [RAW_HEADERS]},
     ).execute()
@@ -206,7 +251,7 @@ def push_to_google_sheets(rows):
     # Pull existing raw rows from A:U
     existing_response = sheet.values().get(
         spreadsheetId=SPREADSHEET_ID,
-        range=f"{SHEET_NAME}!A:U",
+        range=f"{SHEET_NAME}!A:{LAST_COL}",
     ).execute()
 
     existing_values = existing_response.get("values", [])
@@ -229,9 +274,15 @@ def push_to_google_sheets(rows):
         if row_key in existing_key_to_row_number:
             sheet_row_number = existing_key_to_row_number[row_key]
             updates.append({
-                "range": f"{SHEET_NAME}!A{sheet_row_number}:U{sheet_row_number}",
+                "range": f"{SHEET_NAME}!A{sheet_row_number}:{LAST_COL}{sheet_row_number}",
                 "values": [values],
             })
+            snapshot_cents = snapshot_clv_by_row_key.get(row_key)
+            if snapshot_cents is not None:
+                updates.append({
+                    "range": f"{SHEET_NAME}!{SNAPSHOT_CLV_COLUMN}{sheet_row_number}",
+                    "values": [[snapshot_cents]],
+                })
         else:
             appends.append(values)
 
@@ -250,7 +301,7 @@ def push_to_google_sheets(rows):
     if appends:
         sheet.values().append(
             spreadsheetId=SPREADSHEET_ID,
-            range=f"{SHEET_NAME}!A:U",
+            range=f"{SHEET_NAME}!A:{LAST_COL}",
             valueInputOption="RAW",
             insertDataOption="INSERT_ROWS",
             body={"values": appends},
@@ -298,6 +349,17 @@ def main():
     resolved_deduped = [bet for bet in deduped if bet.get("resolved") is True]
     rows = [to_row(bet) for bet in resolved_deduped]
 
+    clv_tracker = {} if SHADOW_MODE else load_clv_tracker()
+    snapshot_clv_by_row_key = {}
+    for bet in resolved_deduped:
+        snapshot_cents = get_snapshot_clv_cents(bet, clv_tracker)
+        if snapshot_cents is None:
+            continue
+        snapshot_row_key = make_sheet_row_key_from_dict(to_row(bet))
+        if snapshot_row_key:
+            snapshot_clv_by_row_key[snapshot_row_key] = snapshot_cents
+    print(f"Snapshot CLV values available: {len(snapshot_clv_by_row_key)}")
+
     row_key_map = {}
     for row in rows:
         row_key = make_sheet_row_key_from_dict(row)
@@ -309,7 +371,7 @@ def main():
     write_csv(rows)
     print("Returned from write_csv(rows)")
 
-    push_to_google_sheets(rows)
+    push_to_google_sheets(rows, snapshot_clv_by_row_key)
     print("Returned from push_to_google_sheets(rows)")
 
     resolved_count = sum(1 for b in deduped if b.get("resolved") is True)

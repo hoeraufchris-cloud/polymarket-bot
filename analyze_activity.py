@@ -197,6 +197,8 @@ RECENT_LEADERBOARD_LIMIT = 50
 RECENT_LEADERBOARD_MIN_PNL = 100000
 RECENT_LEADERBOARD_MIN_ROI = 0.05
 RECENT_LEADERBOARD_MAX_ADDED = 15
+RECENT_LEADERBOARD_MAX_TOTAL = 25
+RECENT_LEADERBOARD_REFRESH_SECONDS = 24 * 60 * 60
 RECENT_LEADERBOARD_MIN_POSITIONS = 10
 RECENT_LEADERBOARD_POSITION_DAYS = 30
 RECENT_LEADERBOARD_MAX_LAST_BUY_HOURS = 168
@@ -254,6 +256,15 @@ if not INSTANCE_LABEL:
 
 CLV_TRACKER_PATH = f"{DATA_DIR}/clv_tracker.json"
 TRACKED_BETS_PATH = f"{DATA_DIR}/tracked_bets.json"
+
+# Shadow log: BET-quality signals that a wallet guardrail or an alert-quality
+# block stopped. Kept in a separate file so they never reach the real tracked
+# bets, the Sheet1 export, or the wallet guardrail stats. Resolved and exported
+# to the "Shadow Signals" tab so each block can be checked against outcomes.
+SHADOW_BETS_ENABLED = True
+SHADOW_BETS_PATH = f"{DATA_DIR}/shadow_bets.json"
+SHADOW_BETS = {}
+SHADOW_BETS_DIRTY = False
 ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
@@ -1026,6 +1037,8 @@ def apply_wallet_performance_guardrail(g, wallet_guardrails):
     g["wallet_guardrail_win_rate"] = win_rate
 
     if action == "suppress":
+        if str(g.get("label", "") or "").upper() == "BET":
+            record_shadow_signal(g, "wallet_guardrail_suppress")
         g["label"] = "PASS"
         g["score"] = 0
         g["stake_pct"] = 0
@@ -1039,6 +1052,7 @@ def apply_wallet_performance_guardrail(g, wallet_guardrails):
 
     elif action == "cap_lean":
         if str(g.get("label", "") or "").upper() == "BET":
+            record_shadow_signal(g, "wallet_guardrail_cap_lean")
             g["label"] = "LEAN"
             g["stake_pct"] = min(
                 int(float(g.get("stake_pct", WALLET_GUARDRAIL_CAP_STAKE_PCT) or WALLET_GUARDRAIL_CAP_STAKE_PCT)),
@@ -1527,8 +1541,10 @@ def get_recent_wallet_activity_stats(wallet):
     return len(positions), (now - max(timestamps)) / 3600.0
 
 
-def load_recent_leaderboard_wallets(existing_wallets):
+def load_recent_leaderboard_wallets(existing_wallets, max_added=None):
     existing = set(existing_wallets)
+    if max_added is None:
+        max_added = RECENT_LEADERBOARD_MAX_ADDED
     params = {
         "category": "SPORTS",
         "timePeriod": RECENT_LEADERBOARD_PERIOD,
@@ -1576,7 +1592,7 @@ def load_recent_leaderboard_wallets(existing_wallets):
             below_filters += 1
             continue
 
-        if len(added_wallets) >= RECENT_LEADERBOARD_MAX_ADDED:
+        if len(added_wallets) >= max_added:
             break
 
         stats = get_recent_wallet_activity_stats(wallet)
@@ -1609,6 +1625,45 @@ def load_recent_leaderboard_wallets(existing_wallets):
         f"already_tracked={already_tracked} below_filters={below_filters} added={len(added_wallets)}"
     )
     return added_wallets, added_rows
+
+
+def refresh_recent_leaderboard_wallets(wallet_profiles):
+    """Mid-run refresh: add newly qualifying monthly-leaderboard wallets.
+
+    Only adds. Wallets already tracked keep their profiles, and the existing
+    stability gating still decides when a tracked wallet is dropped.
+    """
+    global TRACKED_WALLETS
+
+    current_recent = len([w for w in TRACKED_WALLETS if w in RECENT_SOURCED_WALLETS])
+    remaining = RECENT_LEADERBOARD_MAX_TOTAL - current_recent
+    if remaining <= 0:
+        print(
+            f"[RECENT LEADERBOARD REFRESH] skipped: {current_recent} recent wallets "
+            f"already tracked (max {RECENT_LEADERBOARD_MAX_TOTAL})"
+        )
+        return 0
+
+    new_wallets, new_rows = load_recent_leaderboard_wallets(
+        TRACKED_WALLETS, max_added=remaining
+    )
+    if not new_wallets:
+        return 0
+
+    TRACKED_WALLETS = TRACKED_WALLETS + new_wallets
+    RECENT_SOURCED_WALLETS.update(str(w).strip().lower() for w in new_wallets)
+
+    new_profiles = init_wallet_profiles(new_wallets)
+    for wallet, profile in new_profiles.items():
+        if wallet not in wallet_profiles:
+            wallet_profiles[wallet] = profile
+    enrich_wallet_profiles_with_leaderboard(wallet_profiles, new_rows)
+
+    print(
+        f"[RECENT LEADERBOARD REFRESH] added={len(new_wallets)} "
+        f"tracked_wallets_total={len(TRACKED_WALLETS)}"
+    )
+    return len(new_wallets)
 
 
 def build_leaderboard_roi_map(leaderboard_rows):
@@ -4732,6 +4787,47 @@ def load_tracked_bets():
     return {}
 
 
+def load_shadow_bets():
+    try:
+        with open(SHADOW_BETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_shadow_bets():
+    global SHADOW_BETS_DIRTY
+    try:
+        os.makedirs(os.path.dirname(SHADOW_BETS_PATH), exist_ok=True)
+        save_json_atomic(SHADOW_BETS_PATH, SHADOW_BETS, indent=2, sort_keys=True)
+        SHADOW_BETS_DIRTY = False
+    except Exception as e:
+        print(f"[SHADOW SAVE ERROR] {repr(e)}")
+
+
+def record_shadow_signal(g, reason, now_ts=None):
+    """Record a blocked BET-quality signal. Never raises."""
+    global SHADOW_BETS_DIRTY
+    try:
+        if not SHADOW_BETS_ENABLED or not isinstance(g, dict):
+            return
+        now_ts = int(now_ts or time.time())
+        key = make_tracked_bet_key(g, now_ts)
+        if not key or key in SHADOW_BETS:
+            return
+        record_tracked_bet(g, SHADOW_BETS, now_ts)
+        row = SHADOW_BETS.get(key)
+        if isinstance(row, dict):
+            row["shadow"] = True
+            row["shadow_reason"] = str(reason or "")[:200]
+            SHADOW_BETS_DIRTY = True
+    except Exception as e:
+        print(f"[SHADOW RECORD ERROR] {repr(e)}")
+
+
 def load_alerted_bets():
     try:
         with open(ALERTED_BETS_PATH, "r", encoding="utf-8") as f:
@@ -6110,6 +6206,17 @@ def update_clv_tracker(clv_tracker, scored_candidates, now_ts):
 
         row["snapshot_clv_ready"] = is_ready
         row["snapshot_clv_positive"] = bool(is_ready and snapshot_clv > 0)
+
+        # Freeze the first ready reading taken from a fresh price. Without this the
+        # value keeps updating until the market settles (latest price goes to ~0 or ~1)
+        # and the 5-minute-to-6-hour reading is lost.
+        if (
+            is_ready
+            and clv_key in current_price_lookup
+            and row.get("snapshot_clv_frozen") is None
+        ):
+            row["snapshot_clv_frozen"] = round(snapshot_clv, 4)
+            row["snapshot_clv_frozen_ts"] = int(now_ts)
 
         if is_ready:
             ready += 1
@@ -8897,6 +9004,7 @@ if __name__ == "__main__":
     alerted_bets = load_alerted_bets()
     clv_tracker = load_clv_tracker()
     tracked_bets = load_tracked_bets()
+    SHADOW_BETS.update(load_shadow_bets())
     signal_metrics_history = load_signal_metrics_history()
     signal_stage_tracker = load_signal_stage_tracker()
     print(f"INSTANCE_LABEL: {INSTANCE_LABEL}")
@@ -8938,6 +9046,8 @@ if __name__ == "__main__":
     print(f"Starting signal monitor - polling every {POLL_SECONDS} seconds")
     print("=" * 80)
 
+    last_recent_leaderboard_refresh_ts = time.time()
+
     while True:
         cycle_bet_alerts = []
         rejected_candidates = []
@@ -8946,6 +9056,18 @@ if __name__ == "__main__":
         run_heavy_postprocess = (MAIN_LOOP_CYCLE_COUNT % HEAVY_POSTPROCESS_EVERY_N_CYCLES == 0)
 
         try:
+            if (
+                RECENT_LEADERBOARD_ENABLED
+                and RECENT_LEADERBOARD_REFRESH_SECONDS > 0
+                and time.time() - last_recent_leaderboard_refresh_ts
+                >= RECENT_LEADERBOARD_REFRESH_SECONDS
+            ):
+                last_recent_leaderboard_refresh_ts = time.time()
+                try:
+                    refresh_recent_leaderboard_wallets(wallet_profiles)
+                except Exception as refresh_error:
+                    print(f"[RECENT LEADERBOARD REFRESH ERROR] {repr(refresh_error)}")
+
             current_tracked_bet_resolution_bucket = int(
                 time.time() // TRACKED_BET_RESOLUTION_INTERVAL_SECONDS
             )
@@ -9341,6 +9463,18 @@ if __name__ == "__main__":
                         f"possible_flip={alert_g.get('possible_flip')} "
                         f"duplicate_reason={alert_g.get('duplicate_reason')}"
                     )
+
+                    shadow_block_reason = (
+                        alert_g.get("quality_filter_reason")
+                        or get_alert_quality_block_reason(alert_g, wallet_profiles)
+                    )
+                    shadow_key = make_tracked_bet_key(alert_g, result["now_ts"])
+                    if shadow_block_reason and shadow_key not in tracked_bets:
+                        record_shadow_signal(
+                            alert_g,
+                            f"{shadow_block_reason} | decision={decision}",
+                            result["now_ts"],
+                        )
 
 
                 if should_send_bet_alert(alert_g, alerted_bets, result["now_ts"], wallet_profiles):
@@ -10272,6 +10406,33 @@ if __name__ == "__main__":
                     # resolutions with our own stale in-memory copy.
                     tracked_bets = load_tracked_bets()
                     print("Reloaded tracked_bets from disk after resolve/export.")
+
+                    # Shadow signals: resolve and export to their own tab. Bounded and
+                    # isolated so a failure here never affects the real export above.
+                    if SHADOW_BETS_ENABLED:
+                        try:
+                            if SHADOW_BETS_DIRTY:
+                                save_shadow_bets()
+                            shadow_env = {
+                                **os.environ,
+                                "RESOLVE_INPUT_FILE": SHADOW_BETS_PATH,
+                                "EXPORT_INPUT_FILE": SHADOW_BETS_PATH,
+                                "EXPORT_SHEET_NAME": "Shadow Signals",
+                                "EXPORT_SHADOW_MODE": "1",
+                            }
+                            subprocess.run(
+                                ["python3", "resolve_tracked_bets.py"],
+                                env=shadow_env, check=False, timeout=900,
+                            )
+                            subprocess.run(
+                                ["python3", "export_tracked_bets.py"],
+                                env=shadow_env, check=False, timeout=900,
+                            )
+                            SHADOW_BETS.clear()
+                            SHADOW_BETS.update(load_shadow_bets())
+                            print(f"Shadow signals resolved/exported: {len(SHADOW_BETS)} rows.")
+                        except Exception as shadow_error:
+                            print(f"[SHADOW EXPORT ERROR] {repr(shadow_error)}")
                 except Exception as e:
                     print(f"Export pipeline failed: {e}")
         else:
@@ -10281,6 +10442,9 @@ if __name__ == "__main__":
                     f"{INSTANCE_LABEL}"
                 )
                 last_export_day = current_export_bucket
+
+        if SHADOW_BETS_DIRTY:
+            save_shadow_bets()
 
         print(f"Sleeping for {POLL_SECONDS} seconds...")
         print("=" * 80)

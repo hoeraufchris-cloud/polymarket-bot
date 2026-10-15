@@ -58,7 +58,7 @@ ALLOW_NON_RAILWAY_TRACKED_BET_IO = str(
     os.environ.get("ALLOW_NON_RAILWAY_TRACKED_BET_IO", "") or ""
 ).strip().lower() in {"1", "true", "yes"}
 
-INPUT_FILE = os.path.join(DATA_DIR, "tracked_bets.json")
+INPUT_FILE = os.environ.get("RESOLVE_INPUT_FILE") or os.path.join(DATA_DIR, "tracked_bets.json")
 REQUEST_TIMEOUT = 20
 SLEEP_BETWEEN_CALLS = 0.08
 
