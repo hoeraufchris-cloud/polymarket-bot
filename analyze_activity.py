@@ -197,6 +197,9 @@ RECENT_LEADERBOARD_LIMIT = 50
 RECENT_LEADERBOARD_MIN_PNL = 250000
 RECENT_LEADERBOARD_MIN_ROI = 0.05
 RECENT_LEADERBOARD_MAX_ADDED = 15
+RECENT_LEADERBOARD_PROBATION_RESOLVED = 30
+RECENT_LEADERBOARD_PROBATION_STAKE_PCT = 40
+RECENT_SOURCED_WALLETS = set()
 
 TRACKED_WALLETS = []
 WALLET_WEIGHTS = {}
@@ -967,6 +970,25 @@ def apply_wallet_performance_guardrail(g, wallet_guardrails):
     wallet = str(g.get("wallet", "") or "").strip().lower()
     if not wallet.startswith("0x"):
         return g
+
+    if wallet in RECENT_SOURCED_WALLETS:
+        probation_entry = (
+            wallet_guardrails.get(wallet) if isinstance(wallet_guardrails, dict) else None
+        )
+        probation_resolved = 0
+        if isinstance(probation_entry, dict):
+            probation_resolved = int(probation_entry.get("resolved", 0) or 0)
+        if probation_resolved < RECENT_LEADERBOARD_PROBATION_RESOLVED:
+            try:
+                current_stake = int(float(g.get("stake_pct", 0) or 0))
+            except Exception:
+                current_stake = 0
+            if current_stake > RECENT_LEADERBOARD_PROBATION_STAKE_PCT:
+                g["stake_pct"] = RECENT_LEADERBOARD_PROBATION_STAKE_PCT
+                g["reason"] = (
+                    f"{g.get('reason', '')} | "
+                    f"Probation stake cap (recent-leaderboard wallet, resolved={probation_resolved})"
+                ).strip(" |")
 
     if not isinstance(wallet_guardrails, dict):
         return g
@@ -8801,6 +8823,7 @@ if __name__ == "__main__":
     if RECENT_LEADERBOARD_ENABLED:
         recent_wallets, recent_rows = load_recent_leaderboard_wallets(TRACKED_WALLETS)
         TRACKED_WALLETS = TRACKED_WALLETS + recent_wallets
+        RECENT_SOURCED_WALLETS.update(str(w).strip().lower() for w in recent_wallets)
         leaderboard_rows = leaderboard_rows + recent_rows
 
     alerted_bets = load_alerted_bets()
