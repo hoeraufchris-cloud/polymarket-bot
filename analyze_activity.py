@@ -188,6 +188,16 @@ POLL_SECONDS = 2
 LEADERBOARD_WALLET_LIMIT = 50
 LEADERBOARD_WALLET_OFFSETS = [0, 50, 100, 150]
 
+# Recent-PnL discovery: also scan wallets that are hot this month but sit
+# outside the all-time top 200. Added wallets go through the same scoring and
+# guardrails as every other wallet.
+RECENT_LEADERBOARD_ENABLED = True
+RECENT_LEADERBOARD_PERIOD = "MONTH"
+RECENT_LEADERBOARD_LIMIT = 50
+RECENT_LEADERBOARD_MIN_PNL = 250000
+RECENT_LEADERBOARD_MIN_ROI = 0.05
+RECENT_LEADERBOARD_MAX_ADDED = 15
+
 TRACKED_WALLETS = []
 WALLET_WEIGHTS = {}
 
@@ -1441,6 +1451,75 @@ def load_leaderboard_wallets(limit=25, offsets=None):
                 wallets.append(wallet)
 
     return wallets, raw_rows
+
+
+def load_recent_leaderboard_wallets(existing_wallets):
+    existing = set(existing_wallets)
+    params = {
+        "category": "SPORTS",
+        "timePeriod": RECENT_LEADERBOARD_PERIOD,
+        "orderBy": "PNL",
+        "limit": max(1, min(int(RECENT_LEADERBOARD_LIMIT), 50)),
+        "offset": 0,
+    }
+    url = f"https://data-api.polymarket.com/v1/leaderboard?{urllib.parse.urlencode(params)}"
+
+    try:
+        data = fetch_json_url(url)
+    except Exception as e:
+        print(f"[RECENT LEADERBOARD fetch error] -> {repr(e)}")
+        return [], []
+
+    if not isinstance(data, list):
+        print(f"[RECENT LEADERBOARD parse warning] Expected list, got {type(data)}")
+        return [], []
+
+    added_wallets = []
+    added_rows = []
+    already_tracked = 0
+    below_filters = 0
+
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+
+        wallet = str(row.get("proxyWallet", "") or "").strip().lower()
+        if not wallet.startswith("0x") or len(wallet) != 42:
+            continue
+
+        if wallet in existing:
+            already_tracked += 1
+            continue
+
+        try:
+            pnl = float(row.get("pnl", 0) or 0)
+            vol = float(row.get("vol", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+
+        roi = (pnl / vol) if vol > 0 else None
+        if roi is None or pnl < RECENT_LEADERBOARD_MIN_PNL or roi < RECENT_LEADERBOARD_MIN_ROI:
+            below_filters += 1
+            continue
+
+        if len(added_wallets) >= RECENT_LEADERBOARD_MAX_ADDED:
+            break
+
+        existing.add(wallet)
+        added_wallets.append(wallet)
+        added_rows.append(row)
+        print(
+            f"[RECENT LEADERBOARD] added wallet={wallet[-8:]} "
+            f"user={str(row.get('userName', ''))[:20]} "
+            f"month_pnl=${pnl:,.0f} month_roi={roi * 100:.1f}%"
+        )
+
+    print(
+        f"[RECENT LEADERBOARD] period={RECENT_LEADERBOARD_PERIOD} rows={len(data)} "
+        f"already_tracked={already_tracked} below_filters={below_filters} added={len(added_wallets)}"
+    )
+    return added_wallets, added_rows
+
 
 def build_leaderboard_roi_map(leaderboard_rows):
     roi_map = {}
@@ -7790,6 +7869,18 @@ def get_signal_sport_bucket(g):
 
     combined = f"{market_text} | {title_text} | {slug_text}"
 
+    # American football: must be checked before the soccer markers below,
+    # because NFL slugs like nfl-chi-... / nfl-sea-... contain "chi-" / "sea-".
+    padded_text = f" {market_text} | {title_text} "
+    if slug_text.startswith(("nfl-", "aec-nfl-")) or " nfl " in padded_text:
+        return "NFL"
+    if (
+        slug_text.startswith(("cfb-", "aec-cfb-", "ncaaf-", "aec-ncaaf-"))
+        or " ncaaf " in padded_text
+        or "college football" in padded_text
+    ):
+        return "NCAAF"
+
     if "wnba" in combined:
         return "WNBA"
     if "nba" in combined or "basketball" in combined:
@@ -8706,6 +8797,11 @@ if __name__ == "__main__":
 
     if not TRACKED_WALLETS:
         raise RuntimeError("No leaderboard wallets loaded.")
+
+    if RECENT_LEADERBOARD_ENABLED:
+        recent_wallets, recent_rows = load_recent_leaderboard_wallets(TRACKED_WALLETS)
+        TRACKED_WALLETS = TRACKED_WALLETS + recent_wallets
+        leaderboard_rows = leaderboard_rows + recent_rows
 
     alerted_bets = load_alerted_bets()
     clv_tracker = load_clv_tracker()
