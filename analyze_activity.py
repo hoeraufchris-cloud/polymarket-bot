@@ -194,9 +194,13 @@ LEADERBOARD_WALLET_OFFSETS = [0, 50, 100, 150]
 RECENT_LEADERBOARD_ENABLED = True
 RECENT_LEADERBOARD_PERIOD = "MONTH"
 RECENT_LEADERBOARD_LIMIT = 50
-RECENT_LEADERBOARD_MIN_PNL = 250000
+RECENT_LEADERBOARD_MIN_PNL = 100000
 RECENT_LEADERBOARD_MIN_ROI = 0.05
 RECENT_LEADERBOARD_MAX_ADDED = 15
+RECENT_LEADERBOARD_MIN_POSITIONS = 10
+RECENT_LEADERBOARD_POSITION_DAYS = 30
+RECENT_LEADERBOARD_MAX_LAST_BUY_HOURS = 168
+RECENT_LEADERBOARD_ACTIVITY_PAGES = 3
 RECENT_LEADERBOARD_PROBATION_RESOLVED = 30
 RECENT_LEADERBOARD_PROBATION_STAKE_PCT = 40
 RECENT_SOURCED_WALLETS = set()
@@ -1475,6 +1479,54 @@ def load_leaderboard_wallets(limit=25, offsets=None):
     return wallets, raw_rows
 
 
+def get_recent_wallet_activity_stats(wallet):
+    """Returns (distinct_positions_in_window, hours_since_last_buy) or None on error.
+
+    A position is one distinct market + outcome bought inside the window, so a
+    wallet that builds one position in many fills counts once.
+    """
+    now = time.time()
+    cutoff = now - RECENT_LEADERBOARD_POSITION_DAYS * 86400
+    buys = []
+
+    for page in range(RECENT_LEADERBOARD_ACTIVITY_PAGES):
+        params = {"user": wallet, "limit": 500, "offset": page * 500}
+        url = f"https://data-api.polymarket.com/activity?{urllib.parse.urlencode(params)}"
+        try:
+            data = fetch_json_url(url)
+        except Exception as e:
+            print(f"[RECENT LEADERBOARD activity error] wallet={wallet[-8:]} -> {repr(e)}")
+            return None
+        if not isinstance(data, list) or not data:
+            break
+        for r in data:
+            if not isinstance(r, dict):
+                continue
+            if r.get("type") == "TRADE" and str(r.get("side", "")).upper() == "BUY":
+                buys.append(r)
+        if len(data) < 500:
+            break
+
+    if not buys:
+        return 0, None
+
+    timestamps = []
+    positions = set()
+    for r in buys:
+        try:
+            ts = float(r.get("timestamp") or 0)
+        except (TypeError, ValueError):
+            continue
+        timestamps.append(ts)
+        if ts >= cutoff:
+            positions.add((r.get("conditionId") or r.get("slug"), r.get("outcome")))
+
+    if not timestamps:
+        return 0, None
+
+    return len(positions), (now - max(timestamps)) / 3600.0
+
+
 def load_recent_leaderboard_wallets(existing_wallets):
     existing = set(existing_wallets)
     params = {
@@ -1527,13 +1579,29 @@ def load_recent_leaderboard_wallets(existing_wallets):
         if len(added_wallets) >= RECENT_LEADERBOARD_MAX_ADDED:
             break
 
+        stats = get_recent_wallet_activity_stats(wallet)
+        if stats is None:
+            below_filters += 1
+            continue
+        positions, last_buy_h = stats
+        if positions < RECENT_LEADERBOARD_MIN_POSITIONS:
+            print(f"[RECENT LEADERBOARD] skip wallet={wallet[-8:]} positions={positions} (<{RECENT_LEADERBOARD_MIN_POSITIONS})")
+            below_filters += 1
+            continue
+        if last_buy_h is None or last_buy_h > RECENT_LEADERBOARD_MAX_LAST_BUY_HOURS:
+            last_display = "none" if last_buy_h is None else f"{last_buy_h:.0f}h"
+            print(f"[RECENT LEADERBOARD] skip wallet={wallet[-8:]} last_buy={last_display} (>{RECENT_LEADERBOARD_MAX_LAST_BUY_HOURS}h)")
+            below_filters += 1
+            continue
+
         existing.add(wallet)
         added_wallets.append(wallet)
         added_rows.append(row)
         print(
             f"[RECENT LEADERBOARD] added wallet={wallet[-8:]} "
             f"user={str(row.get('userName', ''))[:20]} "
-            f"month_pnl=${pnl:,.0f} month_roi={roi * 100:.1f}%"
+            f"month_pnl=${pnl:,.0f} month_roi={roi * 100:.1f}% "
+            f"positions={positions} last_buy={last_buy_h:.0f}h"
         )
 
     print(
