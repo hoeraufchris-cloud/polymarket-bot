@@ -359,6 +359,12 @@ def main():
         if snapshot_row_key:
             snapshot_clv_by_row_key[snapshot_row_key] = snapshot_cents
     print(f"Snapshot CLV values available: {len(snapshot_clv_by_row_key)}")
+    if not SHADOW_MODE:
+        _frozen_total = sum(
+            1 for _r in clv_tracker.values()
+            if isinstance(_r, dict) and _r.get("snapshot_clv_frozen") is not None
+        )
+        print(f"CLV tracker: {len(clv_tracker)} entries, {_frozen_total} frozen")
 
     row_key_map = {}
     for row in rows:
