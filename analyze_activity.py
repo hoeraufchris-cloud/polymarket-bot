@@ -10443,6 +10443,14 @@ if __name__ == "__main__":
                 )
                 last_export_day = current_export_bucket
 
+        try:
+            clv_summary = update_clv_tracker(
+                clv_tracker, result["scored_candidates"], result["now_ts"]
+            )
+            save_clv_tracker(clv_tracker)
+        except Exception as clv_update_error:
+            print(f"[CLV TRACKER UPDATE FAILED] error={clv_update_error}")
+
         if SHADOW_BETS_DIRTY:
             save_shadow_bets()
 
