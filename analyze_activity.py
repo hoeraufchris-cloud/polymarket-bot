@@ -188,12 +188,35 @@ SIGNAL_METRICS_PRICE_PATH_MIN_PRICE_MOVE = 0.005
 
 UNAVAILABLE_EXECUTION_MARKETS = set()
 
+import os
+
 PUSHOVER_ENABLED = True
-PUSHOVER_USER_KEYS = [
+
+
+def _env_csv(name):
+    return [x.strip() for x in str(os.environ.get(name, "") or "").split(",") if x.strip()]
+
+
+# Credentials come from environment variables (set them in Railway):
+#   PUSHOVER_API_TOKEN   - the Pushover application token
+#   PUSHOVER_USER_KEYS   - comma-separated Pushover user keys
+# TEMPORARY FALLBACK: until the Railway variables are set, the old in-code values are used
+# so alerts keep working. Once they are set, the fallback is removed; after that an instance
+# without the variables (e.g. a local run) sends no pushes at all.
+_PUSHOVER_LEGACY_USER_KEYS = [
     "u2pfi3ci1na4uujiwekmruofti7nnd",
-    "udfwfqtyubkq1tnvdqx84o6h2i78gy"
+    "udfwfqtyubkq1tnvdqx84o6h2i78gy",
 ]
-PUSHOVER_API_TOKEN = "agxdaaoicjeeba5pku3znj4i5eahtz"
+_PUSHOVER_LEGACY_API_TOKEN = "agxdaaoicjeeba5pku3znj4i5eahtz"
+
+PUSHOVER_USER_KEYS = _env_csv("PUSHOVER_USER_KEYS")
+PUSHOVER_API_TOKEN = str(os.environ.get("PUSHOVER_API_TOKEN", "") or "").strip()
+if PUSHOVER_USER_KEYS and PUSHOVER_API_TOKEN:
+    print("[PUSHOVER] credentials loaded from environment variables")
+else:
+    PUSHOVER_USER_KEYS = PUSHOVER_USER_KEYS or list(_PUSHOVER_LEGACY_USER_KEYS)
+    PUSHOVER_API_TOKEN = PUSHOVER_API_TOKEN or _PUSHOVER_LEGACY_API_TOKEN
+    print("[PUSHOVER] WARNING: using in-code fallback credentials; set PUSHOVER_API_TOKEN and PUSHOVER_USER_KEYS")
 PUSHOVER_PRIORITY = 0
 PUSHOVER_TEST_ALERT = False
 
