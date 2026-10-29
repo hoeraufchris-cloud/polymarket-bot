@@ -297,6 +297,23 @@ TRACKED_BETS_EXPORT_INTERVAL_SECONDS = 6 * 60 * 60
 TRACKED_BET_RESOLUTION_INTERVAL_SECONDS = 60
 SNAPSHOT_CLV_MIN_AGE_SECONDS = 300
 SNAPSHOT_CLV_MAX_AGE_SECONDS = 6 * 60 * 60
+
+# Closing-line CLV: the last fresh price seen at or before event start, compared with the
+# entry price. Only counted as reliable when that price was seen within this many seconds
+# of the start; otherwise it is stored but flagged unreliable.
+CLOSING_CLV_MAX_STALENESS_SECONDS = 15 * 60
+
+
+def _clv_parse_start_ts(event_start_time):
+    if not event_start_time:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return int(dt.timestamp())
+    except Exception:
+        return None
 BET_ALERT_MIN_NEW_SHARP_STAKE = 1000
 BET_ALERT_MIN_NEW_BUYS = 2
 BET_ALERT_MIN_FOLLOWER_INCREASE = 1
@@ -6279,6 +6296,7 @@ def record_clv_bet(g, clv_tracker, now_ts):
             "outcome": outcome,
             "wallet": wallet,
             "market": g.get("title", ""),
+            "event_start_time": g.get("event_start_time"),
             "entry_price": entry_price,
             "first_seen_ts": now_ts,
             "last_seen_ts": now_ts,
@@ -6297,9 +6315,14 @@ def update_clv_tracker(clv_tracker, scored_candidates, now_ts):
             "ready": 0,
             "positive": 0,
             "avg_snapshot_clv_cents": 0.0,
+            "closing_ready": 0,
+            "closing_positive": 0,
+            "closing_unreliable": 0,
+            "avg_closing_clv_cents": 0.0,
         }
 
     current_price_lookup = {}
+    event_start_lookup = {}
     for g in scored_candidates:
         if not isinstance(g, dict):
             continue
@@ -6320,11 +6343,17 @@ def update_clv_tracker(clv_tracker, scored_candidates, now_ts):
             continue
 
         current_price_lookup[make_clv_key(slug, outcome, wallet)] = current_price
+        if g.get("event_start_time"):
+            event_start_lookup[make_clv_key(slug, outcome, wallet)] = g.get("event_start_time")
 
     tracked = 0
     ready = 0
     positive = 0
     snapshot_clv_values = []
+    closing_ready = 0
+    closing_positive = 0
+    closing_unreliable = 0
+    closing_clv_values = []
 
     for clv_key, row in clv_tracker.items():
         if not isinstance(row, dict):
@@ -6367,6 +6396,36 @@ def update_clv_tracker(clv_tracker, scored_candidates, now_ts):
             row["snapshot_clv_frozen"] = round(snapshot_clv, 4)
             row["snapshot_clv_frozen_ts"] = int(now_ts)
 
+        # --- Closing-line CLV ---
+        if not row.get("event_start_time") and clv_key in event_start_lookup:
+            row["event_start_time"] = event_start_lookup[clv_key]
+        start_ts = _clv_parse_start_ts(row.get("event_start_time"))
+
+        if start_ts is not None and row.get("closing_price") is None:
+            if clv_key in current_price_lookup and now_ts <= start_ts:
+                row["pre_start_price"] = latest_price
+                row["pre_start_price_ts"] = int(now_ts)
+            if now_ts >= start_ts and row.get("pre_start_price") is not None and entry_price > 0:
+                staleness = max(0, start_ts - int(row.get("pre_start_price_ts") or start_ts))
+                closing_price = float(row["pre_start_price"])
+                closing_clv = closing_price - entry_price
+                reliable = staleness <= CLOSING_CLV_MAX_STALENESS_SECONDS
+                row["closing_price"] = closing_price
+                row["closing_price_staleness_seconds"] = staleness
+                row["closing_clv"] = round(closing_clv, 4)
+                row["closing_clv_ready"] = reliable
+                row["closing_clv_positive"] = bool(reliable and closing_clv > 0)
+                row["closing_ts"] = int(now_ts)
+
+        if row.get("closing_price") is not None:
+            if row.get("closing_clv_ready"):
+                closing_ready += 1
+                closing_clv_values.append(float(row.get("closing_clv", 0) or 0))
+                if row.get("closing_clv_positive"):
+                    closing_positive += 1
+            else:
+                closing_unreliable += 1
+
         if is_ready:
             ready += 1
             snapshot_clv_values.append(snapshot_clv)
@@ -6380,11 +6439,22 @@ def update_clv_tracker(clv_tracker, scored_candidates, now_ts):
             2,
         )
 
+    avg_closing_clv_cents = 0.0
+    if closing_clv_values:
+        avg_closing_clv_cents = round(
+            (sum(closing_clv_values) / len(closing_clv_values)) * 100,
+            2,
+        )
+
     return {
         "tracked": tracked,
         "ready": ready,
         "positive": positive,
         "avg_snapshot_clv_cents": avg_snapshot_clv_cents,
+        "closing_ready": closing_ready,
+        "closing_positive": closing_positive,
+        "closing_unreliable": closing_unreliable,
+        "avg_closing_clv_cents": avg_closing_clv_cents,
     }
 
 def get_follower_count(g):
@@ -10417,6 +10487,12 @@ if __name__ == "__main__":
                 print("Positive CLV rate: N/A")
 
             print(f"Avg snapshot CLV: {clv_summary_safe.get('avg_snapshot_clv_cents', 0.0)} cents")
+            print(
+                f"Closing-line CLV: ready={clv_summary_safe.get('closing_ready', 0)} "
+                f"positive={clv_summary_safe.get('closing_positive', 0)} "
+                f"unreliable={clv_summary_safe.get('closing_unreliable', 0)} "
+                f"avg={clv_summary_safe.get('avg_closing_clv_cents', 0.0)} cents"
+            )
             tracked_bet_summary_safe = locals().get("tracked_bet_summary", {})
 
             if not isinstance(tracked_bet_summary_safe, dict):
