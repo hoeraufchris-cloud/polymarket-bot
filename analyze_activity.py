@@ -169,6 +169,8 @@ from market_model import (
     save_recommendations_json,
     filter_recent_signal_metrics_rows,
     MODEL_HISTORY_LOOKBACK_HOURS,
+    parse_int,
+    parse_float,
 )
 
 # Master switch for the market-model layer (build_recommendations -> tracking ->
@@ -5265,6 +5267,217 @@ def build_market_outcome_performance_summary(tracked_bets, clv_tracker):
     return dict(summary)
 
 
+# ---------------------------------------------------------------------------
+# Pre-start digest: one compact push per event shortly before it starts, with the
+# model's net pick, the money behind it and the money against it.
+# ---------------------------------------------------------------------------
+PRE_START_DIGEST_ENABLED = True
+PRE_START_DIGEST_MILESTONES = (60, 30, 10)   # minutes before start
+PRE_START_DIGEST_STATE_PATH = f"{DATA_DIR}/pre_start_digest_state.json"
+PRE_START_DIGEST_STATE_RETENTION_SECONDS = 3 * 24 * 3600
+PRE_START_DIGEST_MIN_STAKE_PCT = 0           # only digest picks at or above this stake
+
+
+def load_pre_start_digest_state():
+    try:
+        with open(PRE_START_DIGEST_STATE_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_pre_start_digest_state(state):
+    try:
+        save_json_atomic(PRE_START_DIGEST_STATE_PATH, state, indent=2, sort_keys=True)
+    except Exception as e:
+        print(f"[Pre-start digest state save error] {repr(e)}")
+
+
+def _digest_price_text(price):
+    try:
+        p = float(price)
+    except (TypeError, ValueError):
+        return "N/A"
+    if not (0 < p < 1):
+        return "N/A"
+    odds = -(p / (1 - p)) * 100 if p >= 0.5 else ((1 - p) / p) * 100
+    odds = int(round(odds))
+    return f"{round(p * 100)}c ({'+' if odds > 0 else ''}{odds})"
+
+
+def _digest_money(x):
+    try:
+        v = float(x)
+    except (TypeError, ValueError):
+        return "N/A"
+    if v >= 1000:
+        return f"${v / 1000:.0f}k" if v >= 10000 else f"${v / 1000:.1f}k"
+    return f"${int(round(v))}"
+
+
+def build_pre_start_digest_message(pick, milestone):
+    market = str(pick.get("market") or pick.get("slug") or "").strip()
+    short_market = market if len(market) <= 60 else market[:57] + "..."
+    mts = pick.get("minutes_to_start")
+    start_text, _ = format_event_start(pick.get("event_start_time"))
+    start_line = f"Start: {start_text} CT ({mts}m)" if start_text else f"Starts in {mts}m"
+
+    rec = str(pick.get("recommendation", "") or "").upper()
+    stake = pick.get("recommended_stake_pct", 0)
+    lines = [
+        f"{market}",
+        start_line,
+        f"PICK: {pick.get('outcome')} - {rec} {stake}% @ {_digest_price_text(pick.get('latest_current_price'))}",
+        (
+            f"For: {pick.get('unique_wallet_count', 0)} wallets, "
+            f"{_digest_money(pick.get('total_notional'))}, "
+            f"size ratio {pick.get('max_size_ratio', 'N/A')}x, score {pick.get('model_score', 'N/A')}"
+        ),
+    ]
+
+    opp = pick.get("opposite_outcome")
+    if opp:
+        lines.append(
+            f"Against: {opp} {_digest_money(pick.get('opposite_notional'))}, "
+            f"{pick.get('opposite_wallets', 0)} wallets, score {pick.get('opposite_score', 'N/A')}"
+        )
+    else:
+        lines.append("Against: nothing notable on the other side")
+
+    since = pick.get("since_last_buy_seconds")
+    try:
+        lines.append(f"Last buy: {int(since) // 60}m ago")
+    except (TypeError, ValueError):
+        pass
+
+    reasons = [str(r) for r in (pick.get("reasons") or []) if r][:3]
+    if reasons:
+        lines.append("Why: " + "; ".join(reasons))
+
+    body = "\n".join(lines)
+    if len(body) > 950:
+        body = body[:947] + "..."
+    title = f"[{INSTANCE_LABEL}] T-{milestone}m {short_market}"
+    return title[:240], body
+
+
+def send_pre_start_digest_push(title, body):
+    if not PUSHOVER_ENABLED:
+        return False
+    user_keys = [str(x).strip() for x in PUSHOVER_USER_KEYS if str(x).strip()]
+    api_token = str(PUSHOVER_API_TOKEN).strip()
+    if not user_keys or not api_token:
+        return False
+
+    sent_any = False
+    for user_key in user_keys:
+        try:
+            payload = urllib.parse.urlencode({
+                "token": api_token,
+                "user": user_key,
+                "title": title,
+                "message": body,
+                "priority": PUSHOVER_PRIORITY,
+            }).encode("utf-8")
+            req = urllib.request.Request(
+                "https://api.pushover.net/1/messages.json",
+                data=payload,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "Mozilla/5.0",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as response:
+                if response.getcode() == 200:
+                    sent_any = True
+        except Exception as e:
+            print(f"[PRE-START DIGEST] push failed for {user_key[:4]}...{user_key[-4:]}: {e}")
+    return sent_any
+
+
+def run_pre_start_digests(recommendations, state, now_ts, send=True):
+    """Decide and send digests. Returns a list of (slug, milestone, title, body, sent) tuples.
+
+    Per event (slug): the smallest milestone the event has entered is the one considered, and
+    larger milestones are marked handled so a late-discovered event does not backfill. The
+    first digest for an event always sends; later ones send only if the pick changed, or it is
+    the final milestone and the pick is a BET.
+    """
+    results = []
+    if not PRE_START_DIGEST_ENABLED or not isinstance(state, dict):
+        return results
+
+    milestones = sorted(PRE_START_DIGEST_MILESTONES)
+    by_slug = defaultdict(list)
+    for rec in recommendations:
+        if isinstance(rec, dict) and rec.get("slug"):
+            by_slug[str(rec["slug"])].append(rec)
+
+    for slug, recs in by_slug.items():
+        actionable = [
+            r for r in recs
+            if str(r.get("recommendation", "") or "").upper() in {"LEAN", "BET"}
+            and parse_int(r.get("recommended_stake_pct"), 0) >= PRE_START_DIGEST_MIN_STAKE_PCT
+        ]
+        if not actionable:
+            continue
+
+        actionable.sort(
+            key=lambda r: (
+                1 if str(r.get("recommendation", "")).upper() == "BET" else 0,
+                parse_int(r.get("model_score"), 0),
+                parse_float(r.get("total_notional"), 0.0),
+            ),
+            reverse=True,
+        )
+        pick = actionable[0]
+
+        try:
+            mts = int(pick.get("minutes_to_start"))
+        except (TypeError, ValueError):
+            continue
+        if mts <= 0:
+            continue
+
+        eligible = [m for m in milestones if mts <= m]
+        if not eligible:
+            continue
+        target = min(eligible)
+
+        entry = state.setdefault(slug, {"sent": {}, "last_sig": None, "last_ts": 0})
+        if str(target) in entry["sent"]:
+            continue
+
+        for m in eligible:
+            entry["sent"].setdefault(str(m), int(now_ts))
+
+        sig = [pick.get("outcome"), str(pick.get("recommendation", "")).upper(), pick.get("recommended_stake_pct")]
+        is_first = entry.get("last_sig") is None
+        changed = (not is_first) and entry.get("last_sig") != sig
+        final_bet = (target == milestones[0]) and str(pick.get("recommendation", "")).upper() == "BET"
+
+        if not (is_first or changed or final_bet):
+            continue
+
+        title, body = build_pre_start_digest_message(pick, target)
+        sent = False
+        if send:
+            sent = send_pre_start_digest_push(title, body)
+        entry["last_sig"] = sig
+        entry["last_ts"] = int(now_ts)
+        results.append((slug, target, title, body, sent))
+
+    cutoff = int(now_ts) - PRE_START_DIGEST_STATE_RETENTION_SECONDS
+    for slug in [k for k, v in state.items() if isinstance(v, dict) and int(v.get("last_ts", 0) or 0) and int(v.get("last_ts", 0)) < cutoff]:
+        state.pop(slug, None)
+
+    return results
+
+
 def update_signal_stage_tracker(signal_stage_tracker, market_model_recommendations, tracked_bets, clv_tracker, now_ts):
     if not isinstance(signal_stage_tracker, dict):
         signal_stage_tracker = {}
@@ -9510,6 +9723,28 @@ if __name__ == "__main__":
                     save_signal_stage_tracker(signal_stage_tracker)
                 except Exception as market_model_error:
                     print(f"[MARKET MODEL FAILED] error={market_model_error!r}")
+
+                try:
+                    # Only RAILWAY pushes. Any other instance prints a dry run (kept in memory,
+                    # never written to the shared state file) so local runs cannot double-alert.
+                    digest_live = (INSTANCE_LABEL == "RAILWAY")
+                    if digest_live:
+                        pre_start_digest_state = load_pre_start_digest_state()
+                    else:
+                        pre_start_digest_state = globals().setdefault("_DIGEST_DRY_RUN_STATE", {})
+                    digest_results = run_pre_start_digests(
+                        market_model_recommendations,
+                        pre_start_digest_state,
+                        result["now_ts"],
+                        send=digest_live,
+                    )
+                    for _slug, _milestone, _title, _body, _sent in digest_results:
+                        mode = "SENT" if _sent else ("DRY RUN" if not digest_live else "SEND FAILED")
+                        print(f"[PRE-START DIGEST {mode}] {_title}\n{_body}")
+                    if digest_live and digest_results:
+                        save_pre_start_digest_state(pre_start_digest_state)
+                except Exception as digest_error:
+                    print(f"[PRE-START DIGEST FAILED] error={digest_error!r}")
 
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
