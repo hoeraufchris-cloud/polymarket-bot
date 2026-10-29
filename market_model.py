@@ -57,6 +57,13 @@ MODEL_MIN_MINUTES_TO_START = 0
 MODEL_MAX_MINUTES_TO_START = 720
 MODEL_HISTORY_LOOKBACK_HOURS = 48
 
+# Opposite-side netting: when two outcomes of one market both have wallet money,
+# only the better-supported side may stay LEAN/BET.
+OPPOSITE_NETTING_ENABLED = True
+OPPOSITE_MIN_NOTIONAL = 1000.0      # ignore opposing money below this (noise)
+OPPOSITE_CONTESTED_RATIO = 2.0      # own/opposing notional below this = contested
+OPPOSITE_CONTESTED_STAKE_CAP = 50   # stake % cap for a contested side
+
 def filter_recent_rows(rows):
     if not isinstance(rows, list):
         return []
@@ -668,10 +675,90 @@ def build_early_watch_diagnostics_from_snapshots(snapshot_rows):
 
     return diagnostics
 
+def apply_opposite_side_netting(recommendations, opposite_index):
+    """Net opposing outcomes of the same market (same slug), in place.
+
+    opposite_index: {slug: {outcome: {"notional", "score", "wallets"}}} built from every
+    scored snapshot (including ones later discarded). For each LEAN/BET recommendation:
+      - opposing notional < OPPOSITE_MIN_NOTIONAL: unchanged
+      - own notional < opposing notional: demoted to WATCH, stake 0
+      - own/opposing < OPPOSITE_CONTESTED_RATIO: BET -> LEAN, stake capped
+      - otherwise: unchanged, dominance noted in reasons
+    Signal stage is left alone so the stage tracker is unaffected.
+    Returns a dict of counts.
+    """
+    counts = {"demoted": 0, "contested": 0, "dominant": 0, "checked": 0}
+    if not OPPOSITE_NETTING_ENABLED or not isinstance(opposite_index, dict):
+        return counts
+
+    for row in recommendations:
+        recommendation = str(row.get("recommendation", "") or "").upper()
+        if recommendation not in {"LEAN", "BET"}:
+            continue
+
+        slug = str(row.get("slug", "") or "").strip()
+        outcome = str(row.get("outcome", "") or "").strip()
+        sides = opposite_index.get(slug) or {}
+
+        best_name = None
+        best = None
+        for other_outcome, info in sides.items():
+            if other_outcome == outcome:
+                continue
+            if best is None or info.get("notional", 0.0) > best.get("notional", 0.0):
+                best_name, best = other_outcome, info
+
+        if best is None:
+            continue
+
+        counts["checked"] += 1
+        opp_notional = parse_float(best.get("notional"), 0.0)
+        own_notional = parse_float(row.get("total_notional"), 0.0)
+
+        row["opposite_outcome"] = best_name
+        row["opposite_notional"] = round(opp_notional, 2)
+        row["opposite_score"] = best.get("score")
+        row["opposite_wallets"] = best.get("wallets")
+
+        if opp_notional < OPPOSITE_MIN_NOTIONAL:
+            continue
+
+        reasons = list(row.get("reasons", []))
+        if own_notional < opp_notional:
+            row["pre_netting_recommendation"] = row.get("recommendation")
+            row["recommendation"] = "WATCH"
+            row["recommended_stake_pct"] = 0
+            reasons.append(
+                f"netted out: opposing side '{best_name}' has more money "
+                f"({format_dollars(opp_notional)} vs {format_dollars(own_notional)})"
+            )
+            counts["demoted"] += 1
+        elif own_notional < opp_notional * OPPOSITE_CONTESTED_RATIO:
+            row["pre_netting_recommendation"] = row.get("recommendation")
+            if recommendation == "BET":
+                row["recommendation"] = "LEAN"
+            stake = parse_int(row.get("recommended_stake_pct"), 0)
+            row["recommended_stake_pct"] = min(stake, OPPOSITE_CONTESTED_STAKE_CAP)
+            reasons.append(
+                f"contested: opposing side '{best_name}' has {format_dollars(opp_notional)} "
+                f"vs {format_dollars(own_notional)}"
+            )
+            counts["contested"] += 1
+        else:
+            reasons.append(
+                f"dominant over '{best_name}' ({format_dollars(own_notional)} vs {format_dollars(opp_notional)})"
+            )
+            counts["dominant"] += 1
+        row["reasons"] = reasons
+
+    return counts
+
+
 def build_recommendations(rows):
     grouped = group_rows_by_market_outcome(rows)
     recommendations = []
     diagnostics_input_rows = []
+    opposite_index = {}
 
     debug_counts = {
         "grouped_markets": len(grouped),
@@ -717,6 +804,15 @@ def build_recommendations(rows):
             debug_counts["skipped_no_model_output"] += 1
             continue
 
+        _slug = str(snapshot.get("slug", "") or "").strip()
+        _outcome = str(snapshot.get("outcome", "") or "").strip()
+        if _slug and _outcome:
+            opposite_index.setdefault(_slug, {})[_outcome] = {
+                "notional": parse_float(snapshot.get("total_notional"), 0.0),
+                "score": model_output.get("model_score"),
+                "wallets": parse_int(snapshot.get("unique_wallet_count"), 0),
+            }
+
         signal_stage = classify_signal_stage(snapshot, model_output)
 
         diagnostic_row = dict(snapshot)
@@ -755,6 +851,8 @@ def build_recommendations(rows):
             recommendations.append(row)
         elif signal_stage == "confirmed" and recommendation in {"LEAN", "BET"}:
             recommendations.append(row)
+
+    debug_counts["opposite_netting"] = apply_opposite_side_netting(recommendations, opposite_index)
 
     recommendations.sort(
         key=lambda x: (
