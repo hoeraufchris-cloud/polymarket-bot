@@ -144,7 +144,10 @@ def parse_event_start_time(event_start_time):
         return None
 
     try:
-        return datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+        dt = datetime.fromisoformat(str(event_start_time).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
     except Exception:
         return None
 
@@ -226,6 +229,13 @@ def build_market_snapshot(rows):
 
     latest = rows[-1]
 
+    latest_row_by_wallet = {}
+    for _row in rows:
+        _wallet = str(_row.get("wallet", "") or "").strip().lower()
+        if _wallet:
+            latest_row_by_wallet[_wallet] = _row
+    aggregation_rows = list(latest_row_by_wallet.values()) or rows
+
     wallets = set()
     total_notional = 0.0
     total_size = 0.0
@@ -239,7 +249,7 @@ def build_market_snapshot(rows):
     leaderboard_rois = []
     wallet_counts_by_role = defaultdict(int)
 
-    for row in rows:
+    for row in aggregation_rows:
         wallet = str(row.get("wallet", "") or "").strip().lower()
         if wallet:
             wallets.add(wallet)
@@ -292,9 +302,16 @@ def build_market_snapshot(rows):
     latest_ts = parse_ts(latest.get("ts"))
     now_ts = int(time.time())
 
-    if latest_ts is None:
-        since_last_buy_seconds = None
-    else:
+    since_last_buy_seconds = None
+    for _row in aggregation_rows:
+        _row_ts = parse_ts(_row.get("ts"))
+        _age_at_log = _row.get("seconds_since_last_buy")
+        if _row_ts is None or _age_at_log is None:
+            continue
+        _age_now = max(0, int(parse_float(_age_at_log, 0.0))) + max(0, now_ts - _row_ts)
+        if since_last_buy_seconds is None or _age_now < since_last_buy_seconds:
+            since_last_buy_seconds = _age_now
+    if since_last_buy_seconds is None and latest_ts is not None:
         since_last_buy_seconds = max(0, now_ts - latest_ts)
 
     snapshot = {
@@ -350,13 +367,16 @@ def get_recent_activity_penalty_points(snapshot):
     except Exception:
         return 8, "no recent confirmation"
 
-    if since_last_buy <= 300:
+    phase = str(snapshot.get("market_phase", "") or "").strip().lower()
+    age_scale = 4.0 if phase == "pre-game" else 1.0
+
+    if since_last_buy <= 300 * age_scale:
         return 0, "very recent sharp confirmation"
-    if since_last_buy <= 900:
+    if since_last_buy <= 900 * age_scale:
         return 1, "recent sharp confirmation"
-    if since_last_buy <= 1800:
+    if since_last_buy <= 1800 * age_scale:
         return 3, "aging confirmation"
-    if since_last_buy <= 3600:
+    if since_last_buy <= 3600 * age_scale:
         return 6, "stale confirmation"
     return 10, "very stale confirmation"
 
@@ -560,6 +580,8 @@ def classify_signal_stage(snapshot, model_output):
 
             discard_reason = "single_wallet_score_too_low"
         elif minutes_to_start <= 60:
+            if str(model_output.get("recommendation", "") or "").upper() == "LEAN":
+                return "early_watch"
             discard_reason = "single_wallet_too_close_to_start"
         elif minutes_to_start > MODEL_MAX_MINUTES_TO_START:
             discard_reason = "single_wallet_too_early"

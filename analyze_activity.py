@@ -171,6 +171,19 @@ from market_model import (
     MODEL_HISTORY_LOOKBACK_HOURS,
 )
 
+# Master switch for the market-model layer (build_recommendations -> tracking ->
+# signal stage tracker). Set to False to stop it without touching anything else.
+MARKET_MODEL_ENABLED = True
+
+# signal_metrics_history now keeps ONE row per (slug, outcome, wallet) that is
+# updated in place each cycle, instead of appending a new row every cycle.
+SIGNAL_METRICS_RETENTION_HOURS = 72
+SIGNAL_METRICS_MAX_ROWS = 20000
+SIGNAL_METRICS_PRUNE_EVERY_SECONDS = 300
+SIGNAL_METRICS_PRICE_PATH_MAX_POINTS = 40
+SIGNAL_METRICS_PRICE_PATH_MIN_GAP_SECONDS = 300
+SIGNAL_METRICS_PRICE_PATH_MIN_PRICE_MOVE = 0.005
+
 UNAVAILABLE_EXECUTION_MARKETS = set()
 
 PUSHOVER_ENABLED = True
@@ -4869,6 +4882,12 @@ def load_signal_metrics_history():
         with open(SIGNAL_METRICS_HISTORY_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, list):
+                collapsed = collapse_signal_metrics_history(data)
+                if collapsed > 0:
+                    print(
+                        f"[SIGNAL METRICS] collapsed {collapsed} duplicate per-cycle rows "
+                        f"into one row per market/outcome/wallet (now {len(data)} rows)"
+                    )
                 return data
     except Exception:
         pass
@@ -5451,6 +5470,140 @@ def record_tracked_bet(g, tracked_bets, now_ts):
         "resolution_price": None,
     }
 
+_SIGNAL_METRICS_INDEX = {}
+
+
+def _signal_metrics_row_key(row):
+    if not isinstance(row, dict):
+        return None
+    slug = str(row.get("slug", "") or "").strip()
+    outcome = str(row.get("outcome", "") or "").strip()
+    wallet = str(row.get("wallet", "") or "").strip().lower()
+    if not slug or not outcome or not wallet:
+        return None
+    return f"{slug}||{outcome}||{wallet}"
+
+
+def collapse_signal_metrics_history(history):
+    """Collapse legacy per-cycle rows to one row per market/outcome/wallet, in place.
+
+    Keeps the most recent row for each key, records first_ts (earliest ts seen) and
+    seeds price_path. Returns how many rows were removed.
+    """
+    if not isinstance(history, list):
+        return 0
+
+    before = len(history)
+    latest = {}
+    first_ts = {}
+
+    for row in history:
+        key = _signal_metrics_row_key(row)
+        if not key:
+            continue
+        try:
+            row_ts = int(row.get("ts"))
+        except Exception:
+            continue
+        if key not in first_ts or row_ts < first_ts[key]:
+            first_ts[key] = row_ts
+        previous = latest.get(key)
+        if previous is None or row_ts >= int(previous.get("ts") or 0):
+            latest[key] = row
+
+    collapsed = []
+    for key, row in latest.items():
+        row.setdefault("first_ts", first_ts[key])
+        if not isinstance(row.get("price_path"), list):
+            row["price_path"] = [[int(row["ts"]), row.get("current_price"), row.get("total_notional")]]
+        collapsed.append(row)
+
+    collapsed.sort(key=lambda r: int(r.get("ts") or 0))
+    history[:] = collapsed
+    _SIGNAL_METRICS_INDEX.clear()
+    return before - len(history)
+
+
+def _get_signal_metrics_index(history):
+    if len(_SIGNAL_METRICS_INDEX) != len(history):
+        collapse_signal_metrics_history(history)
+        _SIGNAL_METRICS_INDEX.clear()
+        for row in history:
+            key = _signal_metrics_row_key(row)
+            if key:
+                _SIGNAL_METRICS_INDEX[key] = row
+    return _SIGNAL_METRICS_INDEX
+
+
+def upsert_signal_metrics_row(history, row, now_ts):
+    key = _signal_metrics_row_key(row)
+    if not key:
+        return False
+
+    index = _get_signal_metrics_index(history)
+    existing = index.get(key)
+
+    point = [int(now_ts), row.get("current_price"), row.get("total_notional")]
+
+    if existing is None:
+        row["first_ts"] = int(now_ts)
+        row["price_path"] = [point]
+        history.append(row)
+        index[key] = row
+        return True
+
+    path = existing.get("price_path")
+    if not isinstance(path, list) or not path:
+        path = [[int(existing.get("ts") or now_ts), existing.get("current_price"), existing.get("total_notional")]]
+
+    last = path[-1]
+    try:
+        price_moved = abs(float(point[1] or 0) - float(last[1] or 0)) >= SIGNAL_METRICS_PRICE_PATH_MIN_PRICE_MOVE
+    except Exception:
+        price_moved = True
+    try:
+        notional_moved = abs(float(point[2] or 0) - float(last[2] or 0)) >= max(1.0, 0.01 * float(last[2] or 0))
+    except Exception:
+        notional_moved = True
+    waited = (int(now_ts) - int(last[0] or 0)) >= SIGNAL_METRICS_PRICE_PATH_MIN_GAP_SECONDS
+
+    if price_moved or notional_moved or waited:
+        path.append(point)
+        if len(path) > SIGNAL_METRICS_PRICE_PATH_MAX_POINTS:
+            path = path[:1] + path[-(SIGNAL_METRICS_PRICE_PATH_MAX_POINTS - 1):]
+
+    row["first_ts"] = existing.get("first_ts", existing.get("ts"))
+    row["price_path"] = path
+    existing.clear()
+    existing.update(row)
+    return True
+
+
+def prune_signal_metrics_history(history, now_ts):
+    """Drop rows not seen within the retention window (and cap total size). Returns rows removed."""
+    if not isinstance(history, list):
+        return 0
+
+    cutoff = int(now_ts) - int(SIGNAL_METRICS_RETENTION_HOURS * 3600)
+    kept = []
+    for row in history:
+        try:
+            if int(row.get("ts")) >= cutoff:
+                kept.append(row)
+        except Exception:
+            continue
+
+    if len(kept) > SIGNAL_METRICS_MAX_ROWS:
+        kept.sort(key=lambda r: int(r.get("ts") or 0))
+        kept = kept[-SIGNAL_METRICS_MAX_ROWS:]
+
+    removed = len(history) - len(kept)
+    if removed > 0:
+        history[:] = kept
+        _SIGNAL_METRICS_INDEX.clear()
+    return removed
+
+
 def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles):
     if not isinstance(g, dict) or not isinstance(signal_metrics_history, list):
         return
@@ -5581,11 +5734,7 @@ def record_signal_metrics_row(g, signal_metrics_history, now_ts, wallet_profiles
         "insider_resolved_win_rate": g.get("insider_resolved_win_rate"),
     }
 
-    signal_metrics_history.append(row)
-
-    max_rows = 5000
-    if len(signal_metrics_history) > max_rows:
-        del signal_metrics_history[:-max_rows]
+    upsert_signal_metrics_row(signal_metrics_history, row, now_ts)
 
 TRACKED_BET_RESOLUTION_CACHE = {}
 
@@ -9255,7 +9404,42 @@ if __name__ == "__main__":
                 model_history_recorded_count += 1
 
             if model_history_recorded_count > 0:
+                last_prune_ts = getattr(prune_signal_metrics_history, "last_run_ts", 0)
+                if result["now_ts"] - last_prune_ts >= SIGNAL_METRICS_PRUNE_EVERY_SECONDS:
+                    prune_signal_metrics_history(signal_metrics_history, result["now_ts"])
+                    prune_signal_metrics_history.last_run_ts = result["now_ts"]
                 save_signal_metrics_history(signal_metrics_history)
+
+            if MARKET_MODEL_ENABLED:
+                try:
+                    recent_model_signal_metrics = filter_recent_signal_metrics_rows(
+                        signal_metrics_history,
+                        MODEL_HISTORY_LOOKBACK_HOURS,
+                    )
+                    market_model_recommendations = build_recommendations(recent_model_signal_metrics)
+                    save_recommendations_json(market_model_recommendations)
+
+                    market_model_debug_counts = getattr(build_recommendations, "last_debug_counts", {})
+                    market_model_early_watch_diagnostics = getattr(
+                        build_recommendations, "last_early_watch_diagnostics", {}
+                    )
+
+                    tracked_model_recommendation_count = sum(
+                        1
+                        for rec in market_model_recommendations
+                        if track_model_recommendation(rec, result["now_ts"])
+                    )
+
+                    signal_stage_tracker, signal_stage_tracker_summary = update_signal_stage_tracker(
+                        signal_stage_tracker,
+                        market_model_recommendations,
+                        tracked_bets,
+                        clv_tracker,
+                        result["now_ts"],
+                    )
+                    save_signal_stage_tracker(signal_stage_tracker)
+                except Exception as market_model_error:
+                    print(f"[MARKET MODEL FAILED] error={market_model_error!r}")
 
             alert_decision_counts = defaultdict(int)
             alert_decision_counts["raw_bet_candidates"] = len(raw_bet_candidates)
@@ -10141,7 +10325,11 @@ if __name__ == "__main__":
             print(f"New early_watch -> confirmed transitions this cycle: {signal_stage_tracker_summary.get('newly_transitioned', 0)}")
             print(f"Total transitioned rows tracked: {signal_stage_tracker_summary.get('transitioned_total', 0)}")
 
-            signal_stage_performance_summary = signal_stage_tracker_summary
+            try:
+                signal_stage_performance_summary = summarize_signal_stage_tracker(signal_stage_tracker)
+            except Exception as _e:
+                print(f"[STAGE SUMMARY FAILED] error={_e}")
+                signal_stage_performance_summary = {}
 
             print("-" * 80)
             print("SIGNAL STAGE PERFORMANCE SUMMARY - ALL TIME")
@@ -10156,16 +10344,16 @@ if __name__ == "__main__":
 
                 print("-" * 80)
                 print(f"{bucket_label}:")
-                print(f"Rows: {bucket.get('rows', 0)}")
-                print(f"Currently active: {bucket.get('currently_active', 0)}")
-                print(f"Tracked alerts: {bucket.get('tracked_alerts', 0)}")
-                print(f"Resolved alerts: {bucket.get('resolved_alerts', 0)}")
-                print(f"Wins: {bucket.get('wins', 0)}")
-                print(f"Losses: {bucket.get('losses', 0)}")
-                print(f"Win rate: {bucket.get('win_rate')}")
-                print(f"CLV tracked: {bucket.get('clv_tracked', 0)}")
-                print(f"CLV ready: {bucket.get('clv_ready', 0)}")
-                print(f"CLV positive: {bucket.get('clv_positive', 0)}")
+                print(f"Rows: {bucket.get('row_count', 0)}")
+                print(f"Currently active: {bucket.get('active_count', 0)}")
+                print(f"Tracked alerts: {bucket.get('tracked_alert_count', 0)}")
+                print(f"Resolved alerts: {bucket.get('resolved_alert_count', 0)}")
+                print(f"Wins: {bucket.get('win_count', 0)}")
+                print(f"Losses: {bucket.get('loss_count', 0)}")
+                print(f"Win rate: {bucket.get('win_rate_pct')}")
+                print(f"CLV tracked: {bucket.get('clv_tracked_count', 0)}")
+                print(f"CLV ready: {bucket.get('clv_ready_count', 0)}")
+                print(f"CLV positive: {bucket.get('clv_positive_count', 0)}")
                 print(f"Positive snapshot CLV rate: {bucket.get('positive_snapshot_clv_rate')}")
                 print(f"Avg snapshot CLV cents: {bucket.get('avg_snapshot_clv_cents')}")
                 print(f"Transition count: {bucket.get('transition_count', 0)}")
