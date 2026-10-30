@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import datetime, timezone
 import time
 import os
@@ -60,6 +61,8 @@ MODEL_HISTORY_LOOKBACK_HOURS = 48
 # Opposite-side netting: when two outcomes of one market both have wallet money,
 # only the better-supported side may stay LEAN/BET.
 OPPOSITE_NETTING_ENABLED = True
+# One recommendation per event/side across spread lines and total lines.
+SAME_SIDE_COLLAPSE_ENABLED = True
 OPPOSITE_MIN_NOTIONAL = 1000.0      # ignore opposing money below this (noise)
 OPPOSITE_CONTESTED_RATIO = 2.0      # own/opposing notional below this = contested
 OPPOSITE_CONTESTED_STAKE_CAP = 50   # stake % cap for a contested side
@@ -675,6 +678,88 @@ def build_early_watch_diagnostics_from_snapshots(snapshot_rows):
 
     return diagnostics
 
+def get_event_key(slug):
+    """Slug up to and including the date, shared by every market on one event
+    (moneyline, each spread line, each total line)."""
+    slug = str(slug or "").strip()
+    m = re.match(r"^(.*?\d{4}-\d{2}-\d{2})", slug)
+    return m.group(1) if m else slug
+
+
+def get_market_type(slug):
+    slug = str(slug or "").lower()
+    if "-spread-" in slug:
+        return "spread"
+    if "-total-" in slug:
+        return "total"
+    return "other"
+
+
+def collapse_same_side_lines(recommendations):
+    """One recommendation per event/side for spreads and totals.
+
+    An event often has several lines open at once (spread -8.5, -9.5, -10.5; total 2.5, 3.5).
+    Wallets backing one side show up on several of them, so each line would otherwise raise its
+    own near-identical recommendation. Among LEAN/BET rows on the same event, market type
+    (spread or total) and side (the outcome), the strongest line stays; the rest become WATCH
+    with a note, and the lead lists them in other_lines. Signal stage is left alone.
+    Returns counts.
+    """
+    counts = {"groups": 0, "collapsed": 0}
+    if not SAME_SIDE_COLLAPSE_ENABLED:
+        return counts
+
+    groups = defaultdict(list)
+    for row in recommendations:
+        if str(row.get("recommendation", "") or "").upper() not in {"LEAN", "BET"}:
+            continue
+        market_type = get_market_type(row.get("slug"))
+        if market_type not in {"spread", "total"}:
+            continue
+        side = str(row.get("outcome", "") or "").strip().lower()
+        if not side:
+            continue
+        groups[(get_event_key(row.get("slug")), market_type, side)].append(row)
+
+    for _, rows in groups.items():
+        if len(rows) < 2:
+            continue
+        rows.sort(
+            key=lambda r: (
+                1 if str(r.get("recommendation", "")).upper() == "BET" else 0,
+                parse_int(r.get("model_score"), 0),
+                parse_float(r.get("total_notional"), 0.0),
+            ),
+            reverse=True,
+        )
+        lead, others = rows[0], rows[1:]
+        counts["groups"] += 1
+        lead["other_lines"] = [
+            {
+                "market": o.get("market"),
+                "slug": o.get("slug"),
+                "recommendation": o.get("recommendation"),
+                "model_score": o.get("model_score"),
+                "total_notional": round(parse_float(o.get("total_notional"), 0.0), 2),
+            }
+            for o in others
+        ]
+        lead["reasons"] = list(lead.get("reasons", [])) + [
+            f"lead line of {len(rows)} on the same side"
+        ]
+        for o in others:
+            o["pre_collapse_recommendation"] = o.get("recommendation")
+            o["recommendation"] = "WATCH"
+            o["recommended_stake_pct"] = 0
+            o["collapsed_into"] = lead.get("slug")
+            o["reasons"] = list(o.get("reasons", [])) + [
+                f"same side as lead line '{lead.get('market')}'"
+            ]
+            counts["collapsed"] += 1
+
+    return counts
+
+
 def apply_opposite_side_netting(recommendations, opposite_index):
     """Net opposing outcomes of the same market (same slug), in place.
 
@@ -853,6 +938,7 @@ def build_recommendations(rows):
             recommendations.append(row)
 
     debug_counts["opposite_netting"] = apply_opposite_side_netting(recommendations, opposite_index)
+    debug_counts["same_side_collapse"] = collapse_same_side_lines(recommendations)
 
     recommendations.sort(
         key=lambda x: (

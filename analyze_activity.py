@@ -171,6 +171,7 @@ from market_model import (
     MODEL_HISTORY_LOOKBACK_HOURS,
     parse_int,
     parse_float,
+    get_event_key,
 )
 
 # Master switch for the market-model layer (build_recommendations -> tracking ->
@@ -5298,7 +5299,12 @@ PRE_START_DIGEST_ENABLED = True
 PRE_START_DIGEST_MILESTONES = (60, 30, 10)   # minutes before start
 PRE_START_DIGEST_STATE_PATH = f"{DATA_DIR}/pre_start_digest_state.json"
 PRE_START_DIGEST_STATE_RETENTION_SECONDS = 3 * 24 * 3600
+# Digest only for model BETs. LEANs have no resolved track record yet (model picks are tracked
+# but never resolved), so by default they never trigger a push; they appear as extra lines inside
+# a BET digest. Set to "LEAN" to push on LEANs too.
+PRE_START_DIGEST_MIN_RECOMMENDATION = "BET"
 PRE_START_DIGEST_MIN_STAKE_PCT = 0           # only digest picks at or above this stake
+PRE_START_DIGEST_MAX_EXTRA_LINES = 3
 
 
 def load_pre_start_digest_state():
@@ -5341,7 +5347,21 @@ def _digest_money(x):
     return f"${int(round(v))}"
 
 
-def build_pre_start_digest_message(pick, milestone):
+def _digest_pick_label(rec):
+    """Readable side. A spread market is titled for one team ("Spread: Thunder (-8.5)") while the
+    outcome may be the other team, which is then getting the points: show "Mavericks +8.5"."""
+    outcome = str(rec.get("outcome", "") or "").strip()
+    market = str(rec.get("market", "") or "")
+    m = re.match(r"^\s*Spread:\s*(.+?)\s*\(([+-]?\d+(?:\.\d+)?)\)\s*$", market)
+    if not m:
+        return outcome
+    team, line = m.group(1).strip(), float(m.group(2))
+    shown = line if team.lower() == outcome.lower() else -line
+    text = f"{shown:+g}"
+    return f"{outcome} {text}"
+
+
+def build_pre_start_digest_message(pick, milestone, extras=None):
     market = str(pick.get("market") or pick.get("slug") or "").strip()
     short_market = market if len(market) <= 60 else market[:57] + "..."
     mts = pick.get("minutes_to_start")
@@ -5353,7 +5373,7 @@ def build_pre_start_digest_message(pick, milestone):
     lines = [
         f"{market}",
         start_line,
-        f"PICK: {pick.get('outcome')} - {rec} {stake}% @ {_digest_price_text(pick.get('latest_current_price'))}",
+        f"PICK: {_digest_pick_label(pick)} - {rec} {stake}% @ {_digest_price_text(pick.get('latest_current_price'))}",
         (
             f"For: {pick.get('unique_wallet_count', 0)} wallets, "
             f"{_digest_money(pick.get('total_notional'))}, "
@@ -5370,6 +5390,14 @@ def build_pre_start_digest_message(pick, milestone):
     else:
         lines.append("Against: nothing notable on the other side")
 
+    other_lines = pick.get("other_lines") or []
+    if other_lines:
+        parts = [
+            f"{o.get('market')} ({_digest_money(o.get('total_notional'))})"
+            for o in other_lines[:PRE_START_DIGEST_MAX_EXTRA_LINES]
+        ]
+        lines.append("Same side, other lines: " + "; ".join(parts))
+
     since = pick.get("since_last_buy_seconds")
     try:
         lines.append(f"Last buy: {int(since) // 60}m ago")
@@ -5379,6 +5407,12 @@ def build_pre_start_digest_message(pick, milestone):
     reasons = [str(r) for r in (pick.get("reasons") or []) if r][:3]
     if reasons:
         lines.append("Why: " + "; ".join(reasons))
+
+    for ex in (extras or [])[:PRE_START_DIGEST_MAX_EXTRA_LINES]:
+        lines.append(
+            f"Also: {ex.get('market')} - {_digest_pick_label(ex)} "
+            f"{str(ex.get('recommendation', '')).upper()} (score {ex.get('model_score', 'N/A')})"
+        )
 
     body = "\n".join(lines)
     if len(body) > 950:
@@ -5423,41 +5457,53 @@ def send_pre_start_digest_push(title, body):
 
 
 def run_pre_start_digests(recommendations, state, now_ts, send=True):
-    """Decide and send digests. Returns a list of (slug, milestone, title, body, sent) tuples.
+    """Decide and send digests. Returns a list of (event_key, milestone, title, body, sent) tuples.
 
-    Per event (slug): the smallest milestone the event has entered is the one considered, and
-    larger milestones are marked handled so a late-discovered event does not backfill. The
-    first digest for an event always sends; later ones send only if the pick changed, or it is
-    the final milestone and the pick is a BET.
+    One digest per EVENT (all its moneyline, spread and total markets together), so several lines
+    on the same side can never produce several pushes. Only recommendations at or above
+    PRE_START_DIGEST_MIN_RECOMMENDATION qualify. Per event the smallest milestone the event has
+    entered is the one considered and larger ones are marked handled, so a late-discovered event
+    does not backfill. The first digest for an event always sends; later ones send only if the
+    pick changed, or it is the final milestone and the pick is a BET.
     """
     results = []
     if not PRE_START_DIGEST_ENABLED or not isinstance(state, dict):
         return results
 
     milestones = sorted(PRE_START_DIGEST_MILESTONES)
-    by_slug = defaultdict(list)
+    min_rank = 2 if str(PRE_START_DIGEST_MIN_RECOMMENDATION).upper() == "BET" else 1
+    rank = {"BET": 2, "LEAN": 1}
+
+    by_event = defaultdict(list)
     for rec in recommendations:
         if isinstance(rec, dict) and rec.get("slug"):
-            by_slug[str(rec["slug"])].append(rec)
+            by_event[get_event_key(rec["slug"])].append(rec)
 
-    for slug, recs in by_slug.items():
-        actionable = [
+    for event_key, recs in by_event.items():
+        live = [
             r for r in recs
-            if str(r.get("recommendation", "") or "").upper() in {"LEAN", "BET"}
+            if rank.get(str(r.get("recommendation", "") or "").upper(), 0) >= 1
+        ]
+        qualifying = [
+            r for r in live
+            if rank.get(str(r.get("recommendation", "")).upper(), 0) >= min_rank
             and parse_int(r.get("recommended_stake_pct"), 0) >= PRE_START_DIGEST_MIN_STAKE_PCT
         ]
-        if not actionable:
+        if not qualifying:
             continue
 
-        actionable.sort(
-            key=lambda r: (
-                1 if str(r.get("recommendation", "")).upper() == "BET" else 0,
-                parse_int(r.get("model_score"), 0),
-                parse_float(r.get("total_notional"), 0.0),
-            ),
+        sort_key = lambda r: (
+            rank.get(str(r.get("recommendation", "")).upper(), 0),
+            parse_int(r.get("model_score"), 0),
+            parse_float(r.get("total_notional"), 0.0),
+        )
+        qualifying.sort(key=sort_key, reverse=True)
+        pick = qualifying[0]
+        extras = sorted(
+            [r for r in live if r is not pick],
+            key=sort_key,
             reverse=True,
         )
-        pick = actionable[0]
 
         try:
             mts = int(pick.get("minutes_to_start"))
@@ -5471,14 +5517,19 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
             continue
         target = min(eligible)
 
-        entry = state.setdefault(slug, {"sent": {}, "last_sig": None, "last_ts": 0})
+        entry = state.setdefault(event_key, {"sent": {}, "last_sig": None, "last_ts": 0})
         if str(target) in entry["sent"]:
             continue
 
         for m in eligible:
             entry["sent"].setdefault(str(m), int(now_ts))
 
-        sig = [pick.get("outcome"), str(pick.get("recommendation", "")).upper(), pick.get("recommended_stake_pct")]
+        sig = [
+            pick.get("slug"),
+            pick.get("outcome"),
+            str(pick.get("recommendation", "")).upper(),
+            pick.get("recommended_stake_pct"),
+        ]
         is_first = entry.get("last_sig") is None
         changed = (not is_first) and entry.get("last_sig") != sig
         final_bet = (target == milestones[0]) and str(pick.get("recommendation", "")).upper() == "BET"
@@ -5486,17 +5537,17 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
         if not (is_first or changed or final_bet):
             continue
 
-        title, body = build_pre_start_digest_message(pick, target)
+        title, body = build_pre_start_digest_message(pick, target, extras)
         sent = False
         if send:
             sent = send_pre_start_digest_push(title, body)
         entry["last_sig"] = sig
         entry["last_ts"] = int(now_ts)
-        results.append((slug, target, title, body, sent))
+        results.append((event_key, target, title, body, sent))
 
     cutoff = int(now_ts) - PRE_START_DIGEST_STATE_RETENTION_SECONDS
-    for slug in [k for k, v in state.items() if isinstance(v, dict) and int(v.get("last_ts", 0) or 0) and int(v.get("last_ts", 0)) < cutoff]:
-        state.pop(slug, None)
+    for key in [k for k, v in state.items() if isinstance(v, dict) and int(v.get("last_ts", 0) or 0) and int(v.get("last_ts", 0)) < cutoff]:
+        state.pop(key, None)
 
     return results
 
