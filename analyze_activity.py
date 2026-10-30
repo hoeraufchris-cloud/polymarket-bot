@@ -71,6 +71,7 @@ def track_model_recommendation(recommendation, now_ts):
     tracked_model_bets[key] = {
         "tracked_model_bet_key": key,
         "source": "market_model",
+        "model_version": MODEL_VERSION,
         "alert_ts": int(now_ts or time.time()),
         "slug": slug,
         "outcome": outcome,
@@ -98,6 +99,10 @@ def track_model_recommendation(recommendation, now_ts):
         "avg_leaderboard_roi": recommendation.get("avg_leaderboard_roi"),
         "event_start_time": recommendation.get("event_start_time"),
         "since_last_buy_seconds": recommendation.get("since_last_buy_seconds"),
+        "opposite_outcome": recommendation.get("opposite_outcome"),
+        "opposite_notional": recommendation.get("opposite_notional"),
+        "opposite_wallets": recommendation.get("opposite_wallets"),
+        "same_side_other_lines": len(recommendation.get("other_lines") or []),
         "resolved": False,
         "result": None,
         "winning_outcome": None,
@@ -177,6 +182,11 @@ from market_model import (
 # Master switch for the market-model layer (build_recommendations -> tracking ->
 # signal stage tracker). Set to False to stop it without touching anything else.
 MARKET_MODEL_ENABLED = True
+
+# Stamped on every newly tracked model pick so results can be split by model version.
+# Bump this string whenever scoring, netting or collapse rules change in a way that makes
+# new picks not comparable to older ones. Picks with no version were made by earlier models.
+MODEL_VERSION = "2026-10-29-netting-collapse"
 
 # signal_metrics_history now keeps ONE row per (slug, outcome, wallet) that is
 # updated in place each cycle, instead of appending a new row every cycle.
@@ -5552,12 +5562,16 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
     return results
 
 
-def summarize_model_pick_results(tracked_model_bets):
+def summarize_model_pick_results(tracked_model_bets, version="current"):
     """Resolved results of tracked model picks, split BET vs LEAN.
 
-    ROI is a flat 1-unit stake per pick at the price when it was first recommended: a win pays
-    (1 - price) / price units, a loss costs 1 unit. Picks with no usable price count in W-L but
-    not in ROI.
+    version: "current" counts only picks stamped with MODEL_VERSION; "earlier" counts every
+    other pick (earlier models, untagged); "all" counts everything.
+
+    ROI is a flat 1-unit stake per pick at the market price when the model first recommended
+    it (current_price_at_alert; the wallet's own entry price is only a fallback, since that is
+    not a price you could have got): a win pays (1 - price) / price units, a loss costs 1 unit.
+    Picks with no usable price count in W-L but not in ROI.
     """
     out = {}
     for label in ("BET", "LEAN"):
@@ -5572,6 +5586,9 @@ def summarize_model_pick_results(tracked_model_bets):
         label = str(row.get("recommendation", "") or "").upper()
         if label not in out:
             continue
+        is_current = row.get("model_version") == MODEL_VERSION
+        if (version == "current" and not is_current) or (version == "earlier" and is_current):
+            continue
         bucket = out[label]
         bucket["tracked"] += 1
 
@@ -5584,9 +5601,9 @@ def summarize_model_pick_results(tracked_model_bets):
         else:
             bucket["losses"] += 1
 
-        price = row.get("entry_price")
+        price = row.get("current_price_at_alert")
         if price in (None, "", 0):
-            price = row.get("current_price_at_alert")
+            price = row.get("entry_price")
         try:
             price = float(price)
         except (TypeError, ValueError):
@@ -10669,16 +10686,20 @@ if __name__ == "__main__":
                 print(f"Resolved model recommendations: {tracked_model_resolved}")
                 print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
                 try:
-                    for _label, _b in summarize_model_pick_results(tracked_model_bets_summary).items():
-                        _roi = (
-                            f"{_b['units']:+.2f} units over {_b['priced']} priced "
-                            f"({(_b['units'] / _b['priced']) * 100:+.1f}% per pick)"
-                            if _b["priced"] else "n/a"
-                        )
-                        print(
-                            f"Model {_label} picks: tracked={_b['tracked']} resolved={_b['resolved']} "
-                            f"W-L={_b['wins']}-{_b['losses']} flat-stake ROI={_roi}"
-                        )
+                    for _group, _group_name in (("current", f"model {MODEL_VERSION}"), ("earlier", "earlier models")):
+                        for _label, _b in summarize_model_pick_results(
+                            tracked_model_bets_summary, _group
+                        ).items():
+                            _roi = (
+                                f"{_b['units']:+.2f} units over {_b['priced']} priced "
+                                f"({(_b['units'] / _b['priced']) * 100:+.1f}% per pick)"
+                                if _b["priced"] else "n/a"
+                            )
+                            print(
+                                f"Model {_label} picks [{_group_name}]: tracked={_b['tracked']} "
+                                f"resolved={_b['resolved']} W-L={_b['wins']}-{_b['losses']} "
+                                f"flat-stake ROI={_roi}"
+                            )
                 except Exception as _model_summary_error:
                     print(f"[MODEL PICK SUMMARY FAILED] error={_model_summary_error!r}")
                 market_model_debug_counts_safe = locals().get("market_model_debug_counts", {})
