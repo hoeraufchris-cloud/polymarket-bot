@@ -5315,6 +5315,11 @@ PRE_START_DIGEST_STATE_RETENTION_SECONDS = 3 * 24 * 3600
 PRE_START_DIGEST_MIN_RECOMMENDATION = "BET"
 PRE_START_DIGEST_MIN_STAKE_PCT = 0           # only digest picks at or above this stake
 PRE_START_DIGEST_MAX_EXTRA_LINES = 3
+# One notification per game: at most one side pick (moneyline or spread) plus one total, BETs only.
+# If two BET side picks back opposite teams and their model scores are within this many points,
+# the side pick is suppressed entirely (a split market is not a signal); otherwise the stronger
+# one is sent and the weaker is held back. Held-back and suppressed picks are still tracked.
+PRE_START_DIGEST_CONFLICT_SCORE_MARGIN = 10
 
 
 def load_pre_start_digest_state():
@@ -5371,18 +5376,136 @@ def _digest_pick_label(rec):
     return f"{outcome} {text}"
 
 
-def build_pre_start_digest_message(pick, milestone, extras=None):
-    market = str(pick.get("market") or pick.get("slug") or "").strip()
-    short_market = market if len(market) <= 60 else market[:57] + "..."
-    mts = pick.get("minutes_to_start")
-    start_text, _ = format_event_start(pick.get("event_start_time"))
-    start_line = f"Start: {start_text} CT ({mts}m)" if start_text else f"Starts in {mts}m"
+_DIGEST_NAME_STOPWORDS = {"fc", "cf", "sc", "afc", "ac", "the", "club", "de", "vs"}
 
+
+def _digest_market_kind(slug):
+    slug = str(slug or "").lower()
+    if "-spread-" in slug:
+        return "spread"
+    if "-total-" in slug:
+        return "total"
+    return "moneyline"
+
+
+def _digest_team_tokens(name):
+    return {
+        t for t in re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).split()
+        if t and t not in _DIGEST_NAME_STOPWORDS
+    }
+
+
+def _digest_same_team(a, b):
+    ta, tb = _digest_team_tokens(a), _digest_team_tokens(b)
+    if not ta or not tb:
+        return False
+    return ta <= tb or tb <= ta
+
+
+def _digest_side_stance(rec):
+    """Which team a moneyline/spread pick backs: (team name, +1 for / -1 against) or None.
+
+    Spread: the outcome team is the one backed (a title naming the other team is just the
+    market's reference side). Moneyline: "Will X win?" Yes backs X, No is against X; a market
+    whose outcomes are team names backs the outcome. Draws, props and anything else -> None.
+    """
+    outcome = str(rec.get("outcome", "") or "").strip()
+    low = outcome.lower()
+    if not outcome:
+        return None
+    kind = _digest_market_kind(rec.get("slug"))
+    if kind == "total":
+        return None
+    if kind == "spread":
+        if low in {"yes", "no", "draw"} or low.startswith(("over", "under")):
+            return None
+        stance = (outcome, 1)
+    elif low in {"yes", "no"}:
+        m = re.match(r"^\s*will\s+(.+?)\s+win\b", str(rec.get("market", "") or ""), re.I)
+        if not m:
+            return None
+        stance = (m.group(1).strip(), 1 if low == "yes" else -1)
+    elif low == "draw" or low.startswith(("over", "under")):
+        return None
+    else:
+        stance = (outcome, 1)
+    return stance if _digest_team_tokens(stance[0]) else None
+
+
+def _digest_sides_conflict(a, b):
+    """True if two side stances point at opposite teams."""
+    (ta, sa), (tb, sb) = a, b
+    same = _digest_same_team(ta, tb)
+    if sa == 1 and sb == 1:
+        return not same
+    if sa == -1 and sb == -1:
+        return False
+    return same
+
+
+def _digest_total_direction(rec):
+    low = str(rec.get("outcome", "") or "").strip().lower()
+    if low.startswith("over"):
+        return "over"
+    if low.startswith("under"):
+        return "under"
+    return None
+
+
+def select_digest_picks(qualifying):
+    """Choose what one game's notification contains from its BET-level recommendations.
+
+    - side: the strongest moneyline/spread pick, unless a BET on the opposite team scores within
+      PRE_START_DIGEST_CONFLICT_SCORE_MARGIN of it (then the side pick is suppressed).
+    - same_side: other non-conflicting side BETs, shown as extra lines under the side pick.
+    - total: the strongest total, independent of the side pick (Over vs Under BETs that are
+      within the margin of each other suppress the total).
+    - held_back: weaker picks that lost a conflict; suppressed: (kind, a, b) pairs too close to call.
+    """
+    key = lambda r: (parse_int(r.get("model_score"), 0), parse_float(r.get("total_notional"), 0.0))
+    margin = PRE_START_DIGEST_CONFLICT_SCORE_MARGIN
+    out = {"side": None, "same_side": [], "total": None, "held_back": [], "suppressed": []}
+
+    sides = sorted([r for r in qualifying if _digest_market_kind(r.get("slug")) != "total"], key=key, reverse=True)
+    totals = sorted([r for r in qualifying if _digest_market_kind(r.get("slug")) == "total"], key=key, reverse=True)
+
+    if sides:
+        head = sides[0]
+        head_stance = _digest_side_stance(head)
+        conflicts, compatible = [], []
+        if head_stance:
+            for r in sides[1:]:
+                st = _digest_side_stance(r)
+                if not st:
+                    continue
+                (conflicts if _digest_sides_conflict(head_stance, st) else compatible).append(r)
+        if conflicts and parse_int(head.get("model_score"), 0) - parse_int(conflicts[0].get("model_score"), 0) <= margin:
+            out["suppressed"].append(("side", head, conflicts[0]))
+        else:
+            out["side"] = head
+            out["same_side"] = compatible
+            out["held_back"].extend(conflicts)
+
+    if totals:
+        head = totals[0]
+        head_dir = _digest_total_direction(head)
+        conflicts = [
+            r for r in totals[1:]
+            if head_dir and _digest_total_direction(r) and _digest_total_direction(r) != head_dir
+        ]
+        if conflicts and parse_int(head.get("model_score"), 0) - parse_int(conflicts[0].get("model_score"), 0) <= margin:
+            out["suppressed"].append(("total", head, conflicts[0]))
+        else:
+            out["total"] = head
+            out["held_back"].extend(conflicts)
+
+    return out
+
+
+def _digest_block_lines(pick, detailed=True):
     rec = str(pick.get("recommendation", "") or "").upper()
     stake = pick.get("recommended_stake_pct", 0)
     lines = [
-        f"{market}",
-        start_line,
         f"PICK: {_digest_pick_label(pick)} - {rec} {stake}% @ {_digest_price_text(pick.get('latest_current_price'))}",
         (
             f"For: {pick.get('unique_wallet_count', 0)} wallets, "
@@ -5408,23 +5531,37 @@ def build_pre_start_digest_message(pick, milestone, extras=None):
         ]
         lines.append("Same side, other lines: " + "; ".join(parts))
 
-    since = pick.get("since_last_buy_seconds")
-    try:
-        lines.append(f"Last buy: {int(since) // 60}m ago")
-    except (TypeError, ValueError):
-        pass
+    if detailed:
+        since = pick.get("since_last_buy_seconds")
+        try:
+            lines.append(f"Last buy: {int(since) // 60}m ago")
+        except (TypeError, ValueError):
+            pass
 
-    reasons = [str(r) for r in (pick.get("reasons") or []) if r][:3]
-    if reasons:
-        lines.append("Why: " + "; ".join(reasons))
+        reasons = [str(r) for r in (pick.get("reasons") or []) if r][:3]
+        if reasons:
+            lines.append("Why: " + "; ".join(reasons))
+    return lines
 
-    for ex in (extras or [])[:PRE_START_DIGEST_MAX_EXTRA_LINES]:
-        lines.append(
-            f"Also: {ex.get('market')} - {_digest_pick_label(ex)} "
-            f"{str(ex.get('recommendation', '')).upper()} (score {ex.get('model_score', 'N/A')})"
-        )
 
-    body = "\n".join(lines)
+def build_pre_start_digest_message(pick, milestone, total_pick=None):
+    """One notification per game: the headline pick, plus a second BET block for a total."""
+    market = str(pick.get("market") or pick.get("slug") or "").strip()
+    short_market = market if len(market) <= 60 else market[:57] + "..."
+    mts = pick.get("minutes_to_start")
+    start_text, _ = format_event_start(pick.get("event_start_time"))
+    start_line = f"Start: {start_text} CT ({mts}m)" if start_text else f"Starts in {mts}m"
+
+    def assemble(detailed):
+        lines = [f"{market}", start_line] + _digest_block_lines(pick, detailed)
+        if total_pick:
+            lines.append(f"ALSO BET - {str(total_pick.get('market') or total_pick.get('slug') or '').strip()}")
+            lines += _digest_block_lines(total_pick, detailed=False)
+        return "\n".join(lines)
+
+    body = assemble(True)
+    if len(body) > 950 and total_pick:
+        body = assemble(False)
     if len(body) > 950:
         body = body[:947] + "..."
     title = f"[{INSTANCE_LABEL}] T-{milestone}m {short_market}"
@@ -5469,9 +5606,9 @@ def send_pre_start_digest_push(title, body):
 def run_pre_start_digests(recommendations, state, now_ts, send=True):
     """Decide and send digests. Returns a list of (event_key, milestone, title, body, sent) tuples.
 
-    One digest per EVENT (all its moneyline, spread and total markets together), so several lines
-    on the same side can never produce several pushes. Only recommendations at or above
-    PRE_START_DIGEST_MIN_RECOMMENDATION qualify. Per event the smallest milestone the event has
+    One digest per EVENT (game): the strongest moneyline/spread BET, plus the strongest total BET
+    if there is one. Opposite-team side BETs are cross-checked (see select_digest_picks); LEANs
+    never appear. Only recommendations at or above PRE_START_DIGEST_MIN_RECOMMENDATION qualify. Per event the smallest milestone the event has
     entered is the one considered and larger ones are marked handled, so a late-discovered event
     does not backfill. The first digest for an event always sends; later ones send only if the
     pick changed, or it is the final milestone and the pick is a BET.
@@ -5502,21 +5639,13 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
         if not qualifying:
             continue
 
-        sort_key = lambda r: (
-            rank.get(str(r.get("recommendation", "")).upper(), 0),
-            parse_int(r.get("model_score"), 0),
-            parse_float(r.get("total_notional"), 0.0),
-        )
-        qualifying.sort(key=sort_key, reverse=True)
-        pick = qualifying[0]
-        extras = sorted(
-            [r for r in live if r is not pick],
-            key=sort_key,
-            reverse=True,
-        )
+        selection = select_digest_picks(qualifying)
+        side_pick, total_pick = selection["side"], selection["total"]
+        headline = side_pick or total_pick
+        ref = headline or qualifying[0]
 
         try:
-            mts = int(pick.get("minutes_to_start"))
+            mts = int(ref.get("minutes_to_start"))
         except (TypeError, ValueError):
             continue
         if mts <= 0:
@@ -5527,6 +5656,40 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
             continue
         target = min(eligible)
 
+        # Log conflicts once per distinct situation (the state survives between cycles).
+        notes = []
+        for kind, a, b in selection["suppressed"]:
+            notes.append(
+                f"SUPPRESSED {kind}: {_digest_pick_label(a)} on '{a.get('market')}' (score {a.get('model_score')}) vs "
+                f"{_digest_pick_label(b)} on '{b.get('market')}' (score {b.get('model_score')}) are too close to call"
+            )
+        for r in selection["held_back"]:
+            notes.append(
+                f"HELD BACK: {_digest_pick_label(r)} on '{r.get('market')}' (score {r.get('model_score')}) "
+                f"conflicts with a stronger pick"
+            )
+        if notes:
+            entry0 = state.setdefault(event_key, {"sent": {}, "last_sig": None, "last_ts": 0})
+            if entry0.get("conflict_sig") != notes:
+                entry0["conflict_sig"] = notes
+                entry0["last_ts"] = max(int(entry0.get("last_ts", 0) or 0), int(now_ts))
+                for n in notes:
+                    print(f"[PRE-START DIGEST] {event_key} {n}")
+
+        if headline is None:
+            continue
+
+        pick = dict(headline)
+        if side_pick is not None and selection["same_side"]:
+            pick["other_lines"] = list(pick.get("other_lines") or []) + [
+                {
+                    "market": f"{r.get('market')} [{_digest_pick_label(r)}]",
+                    "total_notional": r.get("total_notional"),
+                }
+                for r in selection["same_side"]
+            ]
+        secondary_total = total_pick if side_pick is not None else None
+
         entry = state.setdefault(event_key, {"sent": {}, "last_sig": None, "last_ts": 0})
         if str(target) in entry["sent"]:
             continue
@@ -5534,20 +5697,23 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
         for m in eligible:
             entry["sent"].setdefault(str(m), int(now_ts))
 
-        sig = [
-            pick.get("slug"),
-            pick.get("outcome"),
-            str(pick.get("recommendation", "")).upper(),
-            pick.get("recommended_stake_pct"),
-        ]
+        def _pick_sig(p):
+            return [
+                p.get("slug"),
+                p.get("outcome"),
+                str(p.get("recommendation", "")).upper(),
+                p.get("recommended_stake_pct"),
+            ]
+
+        sig = _pick_sig(headline) + (_pick_sig(secondary_total) if secondary_total else [])
         is_first = entry.get("last_sig") is None
         changed = (not is_first) and entry.get("last_sig") != sig
-        final_bet = (target == milestones[0]) and str(pick.get("recommendation", "")).upper() == "BET"
+        final_bet = (target == milestones[0]) and str(headline.get("recommendation", "")).upper() == "BET"
 
         if not (is_first or changed or final_bet):
             continue
 
-        title, body = build_pre_start_digest_message(pick, target, extras)
+        title, body = build_pre_start_digest_message(pick, target, secondary_total)
         sent = False
         if send:
             sent = send_pre_start_digest_push(title, body)
@@ -9870,6 +10036,7 @@ if __name__ == "__main__":
                         pre_start_digest_state = load_pre_start_digest_state()
                     else:
                         pre_start_digest_state = globals().setdefault("_DIGEST_DRY_RUN_STATE", {})
+                    _digest_state_before = json.dumps(pre_start_digest_state, sort_keys=True, default=str)
                     digest_results = run_pre_start_digests(
                         market_model_recommendations,
                         pre_start_digest_state,
@@ -9879,7 +10046,10 @@ if __name__ == "__main__":
                     for _slug, _milestone, _title, _body, _sent in digest_results:
                         mode = "SENT" if _sent else ("DRY RUN" if not digest_live else "SEND FAILED")
                         print(f"[PRE-START DIGEST {mode}] {_title}\n{_body}")
-                    if digest_live and digest_results:
+                    if digest_live and (
+                        digest_results
+                        or json.dumps(pre_start_digest_state, sort_keys=True, default=str) != _digest_state_before
+                    ):
                         save_pre_start_digest_state(pre_start_digest_state)
                 except Exception as digest_error:
                     print(f"[PRE-START DIGEST FAILED] error={digest_error!r}")
