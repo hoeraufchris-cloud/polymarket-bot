@@ -5552,6 +5552,53 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
     return results
 
 
+def summarize_model_pick_results(tracked_model_bets):
+    """Resolved results of tracked model picks, split BET vs LEAN.
+
+    ROI is a flat 1-unit stake per pick at the price when it was first recommended: a win pays
+    (1 - price) / price units, a loss costs 1 unit. Picks with no usable price count in W-L but
+    not in ROI.
+    """
+    out = {}
+    for label in ("BET", "LEAN"):
+        out[label] = {"tracked": 0, "resolved": 0, "wins": 0, "losses": 0, "units": 0.0, "priced": 0}
+
+    if not isinstance(tracked_model_bets, dict):
+        return out
+
+    for row in tracked_model_bets.values():
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("recommendation", "") or "").upper()
+        if label not in out:
+            continue
+        bucket = out[label]
+        bucket["tracked"] += 1
+
+        result = str(row.get("result", "") or "").upper()
+        if result not in {"WIN", "LOSS"}:
+            continue
+        bucket["resolved"] += 1
+        if result == "WIN":
+            bucket["wins"] += 1
+        else:
+            bucket["losses"] += 1
+
+        price = row.get("entry_price")
+        if price in (None, "", 0):
+            price = row.get("current_price_at_alert")
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < price < 1.0):
+            continue
+        bucket["priced"] += 1
+        bucket["units"] += ((1.0 - price) / price) if result == "WIN" else -1.0
+
+    return out
+
+
 def update_signal_stage_tracker(signal_stage_tracker, market_model_recommendations, tracked_bets, clv_tracker, now_ts):
     if not isinstance(signal_stage_tracker, dict):
         signal_stage_tracker = {}
@@ -10621,6 +10668,19 @@ if __name__ == "__main__":
                 print(f"Tracked model LEANs: {tracked_model_lean_total}")
                 print(f"Resolved model recommendations: {tracked_model_resolved}")
                 print(f"Model recommendation wins/losses: {tracked_model_wins}/{tracked_model_losses}")
+                try:
+                    for _label, _b in summarize_model_pick_results(tracked_model_bets_summary).items():
+                        _roi = (
+                            f"{_b['units']:+.2f} units over {_b['priced']} priced "
+                            f"({(_b['units'] / _b['priced']) * 100:+.1f}% per pick)"
+                            if _b["priced"] else "n/a"
+                        )
+                        print(
+                            f"Model {_label} picks: tracked={_b['tracked']} resolved={_b['resolved']} "
+                            f"W-L={_b['wins']}-{_b['losses']} flat-stake ROI={_roi}"
+                        )
+                except Exception as _model_summary_error:
+                    print(f"[MODEL PICK SUMMARY FAILED] error={_model_summary_error!r}")
                 market_model_debug_counts_safe = locals().get("market_model_debug_counts", {})
 
                 if not isinstance(market_model_debug_counts_safe, dict):
@@ -10979,6 +11039,20 @@ if __name__ == "__main__":
                     # resolutions with our own stale in-memory copy.
                     tracked_bets = load_tracked_bets()
                     print("Reloaded tracked_bets from disk after resolve/export.")
+
+                    # Model picks (tracked_model_bets.json): resolve with the same script,
+                    # pointed at that file. Bounded and isolated like the shadow pass, so a
+                    # failure here never affects the real resolve/export above. Rows are
+                    # re-read from disk on every track call, so nothing in memory goes stale.
+                    try:
+                        subprocess.run(
+                            ["python3", "resolve_tracked_bets.py"],
+                            env={**os.environ, "RESOLVE_INPUT_FILE": TRACKED_MODEL_BETS_PATH},
+                            check=False, timeout=900,
+                        )
+                        print("Model picks resolve pass completed.")
+                    except Exception as model_resolve_error:
+                        print(f"[MODEL PICKS RESOLVE ERROR] {repr(model_resolve_error)}")
 
                     # Shadow signals: resolve and export to their own tab. Bounded and
                     # isolated so a failure here never affects the real export above.
