@@ -5320,6 +5320,10 @@ PRE_START_DIGEST_MAX_EXTRA_LINES = 3
 # the side pick is suppressed entirely (a split market is not a signal); otherwise the stronger
 # one is sent and the weaker is held back. Held-back and suppressed picks are still tracked.
 PRE_START_DIGEST_CONFLICT_SCORE_MARGIN = 10
+# If True, an unchanged BET is sent again at the final milestone (T-10m). Default False: a later
+# milestone only sends when the pick changed (different side, rating or stake), so you are not
+# told the same thing twice.
+PRE_START_DIGEST_RESEND_FINAL_BET = False
 
 
 def load_pre_start_digest_state():
@@ -5611,7 +5615,8 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
     never appear. Only recommendations at or above PRE_START_DIGEST_MIN_RECOMMENDATION qualify. Per event the smallest milestone the event has
     entered is the one considered and larger ones are marked handled, so a late-discovered event
     does not backfill. The first digest for an event always sends; later ones send only if the
-    pick changed, or it is the final milestone and the pick is a BET.
+    pick changed (or, only if PRE_START_DIGEST_RESEND_FINAL_BET is True, it is the final
+    milestone and the pick is a BET).
     """
     results = []
     if not PRE_START_DIGEST_ENABLED or not isinstance(state, dict):
@@ -5708,7 +5713,11 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
         sig = _pick_sig(headline) + (_pick_sig(secondary_total) if secondary_total else [])
         is_first = entry.get("last_sig") is None
         changed = (not is_first) and entry.get("last_sig") != sig
-        final_bet = (target == milestones[0]) and str(headline.get("recommendation", "")).upper() == "BET"
+        final_bet = (
+            PRE_START_DIGEST_RESEND_FINAL_BET
+            and (target == milestones[0])
+            and str(headline.get("recommendation", "")).upper() == "BET"
+        )
 
         if not (is_first or changed or final_bet):
             continue
