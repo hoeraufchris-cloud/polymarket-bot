@@ -5782,6 +5782,113 @@ def summarize_model_pick_results(tracked_model_bets, version="current"):
     return out
 
 
+MODEL_PICK_SCORE_BANDS = ((0, 60), (60, 70), (70, 80), (80, 90), (90, 1000))
+MODEL_PICK_ROW_DUMP_LIMIT = 800
+
+
+def _model_pick_market_type(slug):
+    slug = str(slug or "").lower()
+    if "-spread-" in slug:
+        return "spread"
+    if "-total-" in slug:
+        return "total"
+    return "moneyline"
+
+
+def summarize_model_pick_score_bands(tracked_model_bets, bands=MODEL_PICK_SCORE_BANDS):
+    """Resolved results of tracked model picks by model_score band, BET and LEAN separately.
+
+    Same flat 1-unit-at-market-price ROI as summarize_model_pick_results. All model versions
+    are combined (older picks have no version stamp). Returns {label: [band dicts]}.
+    """
+    out = {}
+    for label in ("BET", "LEAN"):
+        out[label] = [
+            {"band": f"{lo}-{hi - 1}" if hi < 1000 else f"{lo}+", "lo": lo, "hi": hi,
+             "tracked": 0, "resolved": 0, "wins": 0, "losses": 0, "units": 0.0, "priced": 0}
+            for lo, hi in bands
+        ]
+    if not isinstance(tracked_model_bets, dict):
+        return out
+
+    for row in tracked_model_bets.values():
+        if not isinstance(row, dict):
+            continue
+        label = str(row.get("recommendation", "") or "").upper()
+        if label not in out:
+            continue
+        score = parse_int(row.get("model_score"), -1)
+        if score < 0:
+            continue
+        bucket = next((b for b in out[label] if b["lo"] <= score < b["hi"]), None)
+        if bucket is None:
+            continue
+        bucket["tracked"] += 1
+
+        result = str(row.get("result", "") or "").upper()
+        if result not in {"WIN", "LOSS"}:
+            continue
+        bucket["resolved"] += 1
+        bucket["wins" if result == "WIN" else "losses"] += 1
+
+        price = row.get("current_price_at_alert")
+        if price in (None, "", 0):
+            price = row.get("entry_price")
+        try:
+            price = float(price)
+        except (TypeError, ValueError):
+            continue
+        if not (0.0 < price < 1.0):
+            continue
+        bucket["priced"] += 1
+        bucket["units"] += ((1.0 - price) / price) if result == "WIN" else -1.0
+
+    return out
+
+
+def log_model_pick_results(tracked_model_bets):
+    """Print score-band results plus one line per resolved model pick, so results can be
+    analysed from the Railway logs (the normal model summary is behind RUNTIME_SUMMARY_ONLY)."""
+    bands = summarize_model_pick_score_bands(tracked_model_bets)
+    for label, rows in bands.items():
+        for b in rows:
+            if not b["tracked"]:
+                continue
+            roi = (
+                f"{b['units']:+.2f}u/{b['priced']} ({(b['units'] / b['priced']) * 100:+.1f}%)"
+                if b["priced"] else "n/a"
+            )
+            print(
+                f"[MODEL PICK BANDS] {label} score {b['band']}: tracked={b['tracked']} "
+                f"resolved={b['resolved']} W-L={b['wins']}-{b['losses']} flat ROI={roi}"
+            )
+
+    resolved_rows = [
+        r for r in (tracked_model_bets or {}).values()
+        if isinstance(r, dict) and str(r.get("result", "") or "").upper() in {"WIN", "LOSS"}
+    ]
+    resolved_rows.sort(key=lambda r: parse_float(r.get("resolved_ts"), 0.0), reverse=True)
+    print("[MODEL PICK ROW] version|rec|score|stake|type|phase|min_to_start|wallets|notional|price|result|slug|outcome")
+    for r in resolved_rows[:MODEL_PICK_ROW_DUMP_LIMIT]:
+        print(
+            "[MODEL PICK ROW] " + "|".join(str(x) for x in (
+                r.get("model_version") or "none",
+                str(r.get("recommendation", "") or "").upper(),
+                r.get("model_score"),
+                r.get("recommended_stake_pct"),
+                _model_pick_market_type(r.get("slug")),
+                r.get("market_phase"),
+                r.get("minutes_to_start"),
+                r.get("unique_wallet_count"),
+                round(parse_float(r.get("total_notional"), 0.0)),
+                r.get("current_price_at_alert") if r.get("current_price_at_alert") not in (None, "") else r.get("entry_price"),
+                str(r.get("result", "") or "").upper(),
+                r.get("slug"),
+                r.get("outcome"),
+            ))
+        )
+
+
 def update_signal_stage_tracker(signal_stage_tracker, market_model_recommendations, tracked_bets, clv_tracker, now_ts):
     if not isinstance(signal_stage_tracker, dict):
         signal_stage_tracker = {}
@@ -11242,6 +11349,10 @@ if __name__ == "__main__":
                             check=False, timeout=900,
                         )
                         print("Model picks resolve pass completed.")
+                        try:
+                            log_model_pick_results(load_tracked_model_bets())
+                        except Exception as model_results_error:
+                            print(f"[MODEL PICK RESULTS FAILED] {repr(model_results_error)}")
                     except Exception as model_resolve_error:
                         print(f"[MODEL PICKS RESOLVE ERROR] {repr(model_resolve_error)}")
 
