@@ -48,6 +48,90 @@ def save_tracked_model_bets(tracked_model_bets):
         print(f"[Model tracking save error] {repr(e)}")
 
 
+def load_tracked_digest_picks():
+    try:
+        with open(TRACKED_DIGEST_PICKS_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        data = {}
+
+    return data if isinstance(data, dict) else {}
+
+
+def save_tracked_digest_picks(tracked_digest_picks):
+    try:
+        save_json_atomic(TRACKED_DIGEST_PICKS_PATH, tracked_digest_picks, indent=2)
+    except Exception as e:
+        print(f"[Digest pick tracking save error] {repr(e)}")
+
+
+def track_digest_pick(pick, milestone, kind, now_ts):
+    """Record a pick at the moment its pre-start digest was actually sent, so results describe
+    what was alerted (score, price and rating at send time), not the model's first snapshot.
+    First send per slug||outcome only. Same row shape as tracked_model_bets.json so the same
+    resolve script handles it (RESOLVE_INPUT_FILE)."""
+    if not isinstance(pick, dict):
+        return False
+    slug = str(pick.get("slug", "") or "").strip()
+    outcome = str(pick.get("outcome", "") or "").strip()
+    if not slug or not outcome:
+        return False
+
+    key = f"{slug}||{outcome}"
+    tracked = load_tracked_digest_picks()
+    if key in tracked:
+        return False
+
+    tracked[key] = {
+        "tracked_digest_pick_key": key,
+        "source": "digest",
+        "model_version": MODEL_VERSION,
+        "alert_ts": int(now_ts or time.time()),
+        "digest_milestone": milestone,
+        "digest_kind": kind,
+        "slug": slug,
+        "outcome": outcome,
+        "market": str(pick.get("market", "") or "").strip(),
+        "recommendation": str(pick.get("recommendation", "") or "").strip().upper(),
+        "signal_stage": pick.get("signal_stage"),
+        "model_score": pick.get("model_score"),
+        "recommended_stake_pct": pick.get("recommended_stake_pct"),
+        "minutes_to_start": pick.get("minutes_to_start"),
+        "time_to_start_bucket": pick.get("time_to_start_bucket"),
+        "market_phase": pick.get("market_phase"),
+        "current_price_at_alert": pick.get("latest_current_price"),
+        "entry_price": pick.get("latest_wallet_entry_price"),
+        "wallet_entry_price": pick.get("latest_wallet_entry_price"),
+        "latest_edge_pct": pick.get("latest_edge_pct"),
+        "unique_wallet_count": pick.get("unique_wallet_count"),
+        "total_notional": pick.get("total_notional"),
+        "max_size_ratio": pick.get("max_size_ratio"),
+        "avg_leaderboard_roi": pick.get("avg_leaderboard_roi"),
+        "event_start_time": pick.get("event_start_time"),
+        "since_last_buy_seconds": pick.get("since_last_buy_seconds"),
+        "opposite_outcome": pick.get("opposite_outcome"),
+        "opposite_notional": pick.get("opposite_notional"),
+        "opposite_wallets": pick.get("opposite_wallets"),
+        "same_side_other_lines": len(pick.get("other_lines") or []),
+        "resolved": False,
+        "result": None,
+        "winning_outcome": None,
+        "resolved_ts": None,
+        "resolution_price": None,
+    }
+    save_tracked_digest_picks(tracked)
+    return True
+
+
+def track_sent_digest(event_key, milestone, headline, total_pick, now_ts):
+    """Callback for run_pre_start_digests: track each pick that went out in a sent digest."""
+    for p in (headline, total_pick):
+        if not p:
+            continue
+        kind = "total" if _digest_market_kind(p.get("slug")) == "total" else "side"
+        track_digest_pick(p, milestone, kind, now_ts)
+
+
 def track_model_recommendation(recommendation, now_ts):
     if not isinstance(recommendation, dict):
         return False
@@ -318,6 +402,7 @@ ALERTED_BETS_PATH = f"{DATA_DIR}/alerted_bets.json"
 SIGNAL_METRICS_HISTORY_PATH = f"{DATA_DIR}/signal_metrics_history.json"
 SIGNAL_STAGE_TRACKER_PATH = f"{DATA_DIR}/signal_stage_tracker.json"
 TRACKED_MODEL_BETS_PATH = f"{DATA_DIR}/tracked_model_bets.json"
+TRACKED_DIGEST_PICKS_PATH = f"{DATA_DIR}/tracked_digest_picks.json"
 INSIDER_DIAGNOSTICS_CSV_PATH = f"{DATA_DIR}/insider_diagnostics.csv"
 WALLET_HISTORY_STATS_PATH = f"{DATA_DIR}/wallet_history_stats.json"
 ALL_BET_SIGNALS_CSV_PATH = f"{DATA_DIR}/all_bet_signals.csv"
@@ -5607,7 +5692,7 @@ def send_pre_start_digest_push(title, body):
     return sent_any
 
 
-def run_pre_start_digests(recommendations, state, now_ts, send=True):
+def run_pre_start_digests(recommendations, state, now_ts, send=True, on_send=None):
     """Decide and send digests. Returns a list of (event_key, milestone, title, body, sent) tuples.
 
     One digest per EVENT (game): the strongest moneyline/spread BET, plus the strongest total BET
@@ -5729,6 +5814,11 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True):
         entry["last_sig"] = sig
         entry["last_ts"] = int(now_ts)
         results.append((event_key, target, title, body, sent))
+        if sent and on_send is not None:
+            try:
+                on_send(event_key, target, headline, secondary_total)
+            except Exception as track_error:
+                print(f"[PRE-START DIGEST] tracking failed: {track_error!r}")
 
     cutoff = int(now_ts) - PRE_START_DIGEST_STATE_RETENTION_SECONDS
     for key in [k for k, v in state.items() if isinstance(v, dict) and int(v.get("last_ts", 0) or 0) and int(v.get("last_ts", 0)) < cutoff]:
@@ -5792,7 +5882,7 @@ def summarize_model_pick_results(tracked_model_bets, version="current"):
 
 
 MODEL_PICK_SCORE_BANDS = ((0, 60), (60, 70), (70, 80), (80, 90), (90, 1000))
-MODEL_PICK_ROW_DUMP_LIMIT = 800
+MODEL_PICK_ROW_DUMP_LIMIT = 300
 
 
 def _model_pick_market_type(slug):
@@ -5855,7 +5945,7 @@ def summarize_model_pick_score_bands(tracked_model_bets, bands=MODEL_PICK_SCORE_
     return out
 
 
-def log_model_pick_results(tracked_model_bets):
+def log_model_pick_results(tracked_model_bets, tag="MODEL PICK"):
     """Print score-band results plus one line per resolved model pick, so results can be
     analysed from the Railway logs (the normal model summary is behind RUNTIME_SUMMARY_ONLY)."""
     bands = summarize_model_pick_score_bands(tracked_model_bets)
@@ -5868,7 +5958,7 @@ def log_model_pick_results(tracked_model_bets):
                 if b["priced"] else "n/a"
             )
             print(
-                f"[MODEL PICK BANDS] {label} score {b['band']}: tracked={b['tracked']} "
+                f"[{tag} BANDS] {label} score {b['band']}: tracked={b['tracked']} "
                 f"resolved={b['resolved']} W-L={b['wins']}-{b['losses']} flat ROI={roi}"
             )
 
@@ -5877,10 +5967,10 @@ def log_model_pick_results(tracked_model_bets):
         if isinstance(r, dict) and str(r.get("result", "") or "").upper() in {"WIN", "LOSS"}
     ]
     resolved_rows.sort(key=lambda r: parse_float(r.get("resolved_ts"), 0.0), reverse=True)
-    print("[MODEL PICK ROW] version|rec|score|stake|type|phase|min_to_start|wallets|notional|price|result|slug|outcome")
+    print(f"[{tag} ROW] version|rec|score|stake|type|phase|min_to_start|wallets|notional|price|result|slug|outcome|milestone|kind")
     for r in resolved_rows[:MODEL_PICK_ROW_DUMP_LIMIT]:
         print(
-            "[MODEL PICK ROW] " + "|".join(str(x) for x in (
+            f"[{tag} ROW] " + "|".join(str(x) for x in (
                 r.get("model_version") or "none",
                 str(r.get("recommendation", "") or "").upper(),
                 r.get("model_score"),
@@ -5894,6 +5984,8 @@ def log_model_pick_results(tracked_model_bets):
                 str(r.get("result", "") or "").upper(),
                 r.get("slug"),
                 r.get("outcome"),
+                r.get("digest_milestone", "-"),
+                r.get("digest_kind", "-"),
             ))
         )
 
@@ -10158,6 +10250,10 @@ if __name__ == "__main__":
                         pre_start_digest_state,
                         result["now_ts"],
                         send=digest_live,
+                        on_send=(
+                            (lambda ek, ms, hd, tp, _now=result["now_ts"]: track_sent_digest(ek, ms, hd, tp, _now))
+                            if digest_live else None
+                        ),
                     )
                     for _slug, _milestone, _title, _body, _sent in digest_results:
                         mode = "SENT" if _sent else ("DRY RUN" if not digest_live else "SEND FAILED")
@@ -11364,6 +11460,20 @@ if __name__ == "__main__":
                             print(f"[MODEL PICK RESULTS FAILED] {repr(model_results_error)}")
                     except Exception as model_resolve_error:
                         print(f"[MODEL PICKS RESOLVE ERROR] {repr(model_resolve_error)}")
+
+                    # Digest picks (tracked at send time): resolve the same way and log results
+                    # by score band, which is the data a score-floor decision should use.
+                    try:
+                        if os.path.exists(TRACKED_DIGEST_PICKS_PATH):
+                            subprocess.run(
+                                ["python3", "resolve_tracked_bets.py"],
+                                env={**os.environ, "RESOLVE_INPUT_FILE": TRACKED_DIGEST_PICKS_PATH},
+                                check=False, timeout=900,
+                            )
+                            print("Digest picks resolve pass completed.")
+                            log_model_pick_results(load_tracked_digest_picks(), tag="DIGEST PICK")
+                    except Exception as digest_resolve_error:
+                        print(f"[DIGEST PICKS RESOLVE ERROR] {repr(digest_resolve_error)}")
 
                     # Shadow signals: resolve and export to their own tab. Bounded and
                     # isolated so a failure here never affects the real export above.
