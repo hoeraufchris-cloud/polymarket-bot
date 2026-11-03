@@ -1592,6 +1592,99 @@ def fetch_json_url(url):
     raise last_error
 
 
+# ---------------------------------------------------------------------------
+# Polymarket Data API v2. Data API v1 was retired on 2026-11-02 and now answers 410 Gone.
+# v2 wraps rows in {"data": [...], "pagination": {"next_cursor": ...}}, uses snake_case field
+# names and cursor paging (no offset). The helpers below fetch v2 and hand back rows in the
+# old v1 shape (camelCase, same key names) so the rest of the bot is unchanged.
+# ---------------------------------------------------------------------------
+DATA_API_V2_BASE = "https://data-api.polymarket.com/v2"
+
+# v2 key -> the v1 key the bot reads, where plain snake->camel conversion is not enough.
+_V2_ACTIVITY_RENAMES = {"token_id": "asset"}
+_V2_POSITION_RENAMES = {
+    "token_id": "asset",
+    "current_size": "size",
+    "avg_price": "avgPrice",
+    "current_price": "curPrice",
+    "current_value": "currentValue",
+    "unrealized_pnl": "cashPnl",
+    "percent_pnl": "percentPnl",
+    "entry_cost_usdc": "initialValue",
+    "total_size": "totalBought",
+    "realized_pnl": "realizedPnl",
+    "end_date": "endDate",
+    "opposite_outcome": "oppositeOutcome",
+    "opposite_token_id": "oppositeAsset",
+}
+_V2_LEADERBOARD_RENAMES = {
+    "user_id": "proxyWallet",
+    "user_name": "userName",
+    "volume": "vol",
+}
+
+
+def _snake_to_camel(key):
+    parts = str(key).split("_")
+    return parts[0] + "".join(p[:1].upper() + p[1:] for p in parts[1:])
+
+
+def v2_row_to_v1(row, renames=None):
+    """Return a copy of a v2 row that also carries the v1 (camelCase) key names."""
+    out = {}
+    for key, value in row.items():
+        out[key] = value
+        out[_snake_to_camel(key)] = value
+    for old_key, new_key in (renames or {}).items():
+        if old_key in row:
+            out[new_key] = row[old_key]
+    return out
+
+
+def parse_data_api_v2_payload(payload, renames=None):
+    """Return (rows in v1 shape, next_cursor) from a v2 response body."""
+    if isinstance(payload, list):  # tolerate a bare list
+        data, pagination = payload, {}
+    elif isinstance(payload, dict):
+        data = payload.get("data")
+        pagination = payload.get("pagination") or {}
+    else:
+        data, pagination = None, {}
+
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list):
+        data = []
+
+    rows = [v2_row_to_v1(r, renames) for r in data if isinstance(r, dict)]
+    cursor = pagination.get("next_cursor") if isinstance(pagination, dict) else None
+    return rows, (cursor or None)
+
+
+def fetch_data_api_v2(path, params, max_pages=1, renames=None, max_rows=None):
+    """GET {DATA_API_V2_BASE}/{path}, following pagination.next_cursor for up to max_pages pages.
+
+    The same filters are re-sent on every page, as the API requires. Raises on HTTP errors.
+    """
+    rows = []
+    cursor = None
+    page_cap = max(1, int(max_pages))
+    if max_rows is not None:
+        page_cap = max(page_cap, 20)  # keep following next_cursor until max_rows reached (safety cap)
+    for _ in range(page_cap):
+        query = dict(params)
+        if cursor:
+            query["cursor"] = cursor
+        url = f"{DATA_API_V2_BASE}/{path}?{urllib.parse.urlencode(query)}"
+        page_rows, cursor = parse_data_api_v2_payload(fetch_json_url(url), renames)
+        rows.extend(page_rows)
+        if not cursor or not page_rows:
+            break
+        if max_rows is not None and len(rows) >= max_rows:
+            break
+    return rows[:max_rows] if max_rows is not None else rows
+
+
 def load_leaderboard_wallets(limit=25, offsets=None):
     if offsets is None:
         offsets = [0]
@@ -1601,33 +1694,41 @@ def load_leaderboard_wallets(limit=25, offsets=None):
     raw_rows = []
 
     safe_limit = max(1, min(int(limit), 50))
+    need = min(1000, max(int(o) for o in offsets) + safe_limit)
+    cache_path = f"{DATA_DIR}/leaderboard_cache.json"
+
+    all_rows = []
+    try:
+        all_rows = fetch_data_api_v2(
+            "leaderboard",
+            {"category": "sports", "time_period": "all", "sort_by": "PNL", "limit": need},
+            max_pages=max(1, (need + 999) // 1000),
+            renames=_V2_LEADERBOARD_RENAMES,
+            max_rows=need,
+        )
+    except Exception as e:
+        print(f"[Leaderboard fetch error] -> {repr(e)}")
+
+    if all_rows:
+        try:
+            save_json_atomic(cache_path, {"saved_ts": int(time.time()), "rows": all_rows}, indent=None)
+        except Exception as e:
+            print(f"[Leaderboard cache save error] {repr(e)}")
+    else:
+        # Never crash-loop on a failed fetch: fall back to the last good leaderboard.
+        try:
+            with open(cache_path, "r", encoding="utf-8") as f:
+                cached = json.load(f)
+            all_rows = [r for r in (cached.get("rows") or []) if isinstance(r, dict)]
+            if all_rows:
+                age_h = (time.time() - float(cached.get("saved_ts") or 0)) / 3600.0
+                print(f"[Leaderboard] fetch failed; using cached leaderboard ({len(all_rows)} rows, {age_h:.1f}h old)")
+        except Exception:
+            all_rows = []
 
     for offset in offsets:
-        params = {
-            "category": "SPORTS",
-            "timePeriod": "ALL",
-            "orderBy": "PNL",
-            "limit": safe_limit,
-            "offset": int(offset),
-        }
-
-        query = urllib.parse.urlencode(params)
-        url = f"https://data-api.polymarket.com/v1/leaderboard?{query}"
-
-        try:
-            data = fetch_json_url(url)
-        except Exception as e:
-            print(f"[Leaderboard fetch error] offset={offset} -> {repr(e)}")
-            continue
-
-        if not isinstance(data, list):
-            print(f"[Leaderboard parse warning] Expected list, got {type(data)}")
-            continue
-
+        data = all_rows[int(offset): int(offset) + safe_limit]
         for row in data:
-            if not isinstance(row, dict):
-                continue
-
             raw_rows.append(row)
 
             wallet = str(row.get("proxyWallet", "") or "").strip().lower()
@@ -1654,23 +1755,19 @@ def get_recent_wallet_activity_stats(wallet):
     cutoff = now - RECENT_LEADERBOARD_POSITION_DAYS * 86400
     buys = []
 
-    for page in range(RECENT_LEADERBOARD_ACTIVITY_PAGES):
-        params = {"user": wallet, "limit": 500, "offset": page * 500}
-        url = f"https://data-api.polymarket.com/activity?{urllib.parse.urlencode(params)}"
-        try:
-            data = fetch_json_url(url)
-        except Exception as e:
-            print(f"[RECENT LEADERBOARD activity error] wallet={wallet[-8:]} -> {repr(e)}")
-            return None
-        if not isinstance(data, list) or not data:
-            break
-        for r in data:
-            if not isinstance(r, dict):
-                continue
-            if r.get("type") == "TRADE" and str(r.get("side", "")).upper() == "BUY":
-                buys.append(r)
-        if len(data) < 500:
-            break
+    try:
+        data = fetch_data_api_v2(
+            "activity",
+            {"user": wallet, "limit": 500},
+            max_pages=RECENT_LEADERBOARD_ACTIVITY_PAGES,
+            renames=_V2_ACTIVITY_RENAMES,
+        )
+    except Exception as e:
+        print(f"[RECENT LEADERBOARD activity error] wallet={wallet[-8:]} -> {repr(e)}")
+        return None
+    for r in data:
+        if r.get("type") == "TRADE" and str(r.get("side", "")).upper() == "BUY":
+            buys.append(r)
 
     if not buys:
         return 0, None
@@ -1697,22 +1794,20 @@ def load_recent_leaderboard_wallets(existing_wallets, max_added=None):
     if max_added is None:
         max_added = RECENT_LEADERBOARD_MAX_ADDED
     params = {
-        "category": "SPORTS",
-        "timePeriod": RECENT_LEADERBOARD_PERIOD,
-        "orderBy": "PNL",
+        "category": "sports",
+        "time_period": str(RECENT_LEADERBOARD_PERIOD).lower(),
+        "sort_by": "PNL",
         "limit": max(1, min(int(RECENT_LEADERBOARD_LIMIT), 50)),
-        "offset": 0,
     }
-    url = f"https://data-api.polymarket.com/v1/leaderboard?{urllib.parse.urlencode(params)}"
 
     try:
-        data = fetch_json_url(url)
+        data = fetch_data_api_v2("leaderboard", params, renames=_V2_LEADERBOARD_RENAMES)
     except Exception as e:
         print(f"[RECENT LEADERBOARD fetch error] -> {repr(e)}")
         return [], []
 
-    if not isinstance(data, list):
-        print(f"[RECENT LEADERBOARD parse warning] Expected list, got {type(data)}")
+    if not data:
+        print("[RECENT LEADERBOARD parse warning] no rows returned")
         return [], []
 
     added_wallets = []
@@ -2017,6 +2112,7 @@ def fetch_wallet_history_stats(wallet):
     trade_keys = set()
     notionals = []
     rows_seen = 0
+    cursor = None
 
 
     for page_index in range(WALLET_HISTORY_STATS_MAX_PAGES_PER_WALLET):
@@ -2026,15 +2122,16 @@ def fetch_wallet_history_stats(wallet):
         params = {
             "user": wallet,
             "limit": WALLET_HISTORY_STATS_PAGE_LIMIT,
-            "offset": offset,
-            "sortBy": "TIMESTAMP",
-            "sortDirection": "DESC",
+            "sort_by": "TIMESTAMP",
+            "sort_direction": "DESC",
         }
+        if cursor:
+            params["cursor"] = cursor
 
 
         try:
             response = requests.get(
-                "https://data-api.polymarket.com/activity",
+                f"{DATA_API_V2_BASE}/activity",
                 params=params,
                 timeout=WALLET_HISTORY_STATS_TIMEOUT_SECONDS,
             )
@@ -2051,12 +2148,7 @@ def fetch_wallet_history_stats(wallet):
             break
 
 
-        if isinstance(payload, list):
-            rows = payload
-        elif isinstance(payload, dict):
-            rows = payload.get("data") or payload.get("activity") or payload.get("results") or []
-        else:
-            rows = []
+        rows, cursor = parse_data_api_v2_payload(payload, _V2_ACTIVITY_RENAMES)
 
 
         if not rows:
@@ -2109,7 +2201,7 @@ def fetch_wallet_history_stats(wallet):
                 notionals.append(notional)
 
 
-        if len(rows) < WALLET_HISTORY_STATS_PAGE_LIMIT:
+        if len(rows) < WALLET_HISTORY_STATS_PAGE_LIMIT or not cursor:
             break
 
 
@@ -2216,15 +2308,8 @@ def enrich_wallet_profiles_with_leaderboard(wallet_profiles, leaderboard_rows):
         wallet_profiles[wallet]["leaderboard_username"] = stats.get("leaderboard_username", "")
 
 def load_activity(user_wallet: str):
-    encoded_user = urllib.parse.quote(user_wallet, safe="")
-    url = f"https://data-api.polymarket.com/activity?user={encoded_user}"
-
-    data = fetch_json_url(url)
-
-    if not isinstance(data, list):
-        raise ValueError("Expected activity API response to be a list.")
-
-    return [x for x in data if isinstance(x, dict)]
+    # Data API v2 (v1 retired 2026-11-02). Rows come back in the old v1 shape.
+    return fetch_data_api_v2("activity", {"user": user_wallet}, renames=_V2_ACTIVITY_RENAMES)
 
 
 def filter_recent_trades(trades, hours_lookback=12):
@@ -2654,15 +2739,12 @@ def _start_position_refresh_thread():
 
 
 def load_positions(user_wallet: str):
-    encoded_user = urllib.parse.quote(user_wallet, safe="")
-    url = f"https://data-api.polymarket.com/positions?user={encoded_user}"
-
-    data = fetch_json_url(url)
-
-    if not isinstance(data, list):
-        raise ValueError("Expected positions API response to be a list.")
-
-    return [x for x in data if isinstance(x, dict)]
+    # Data API v2. filter_amount=1 matches the v1 default minimum of 1 share.
+    return fetch_data_api_v2(
+        "positions",
+        {"user": user_wallet, "limit": 100, "filter_amount": 1},
+        renames=_V2_POSITION_RENAMES,
+    )
 
 
 def build_position_lookup(positions):
