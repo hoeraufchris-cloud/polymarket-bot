@@ -197,6 +197,7 @@ def track_model_recommendation(recommendation, now_ts):
     save_tracked_model_bets(tracked_model_bets)
     return True
 
+import random
 import time
 import requests
 import threading
@@ -2702,7 +2703,8 @@ def _position_refresh_worker():
         try:
             positions = []
 
-            with ThreadPoolExecutor(max_workers=WALLET_FETCH_MAX_WORKERS) as executor:
+            failed_wallets = 0
+            with ThreadPoolExecutor(max_workers=min(WALLET_FETCH_MAX_WORKERS, POSITION_FETCH_MAX_WORKERS)) as executor:
                 future_to_wallet = {
                     executor.submit(load_positions, wallet): wallet
                     for wallet in TRACKED_WALLETS
@@ -2711,9 +2713,16 @@ def _position_refresh_worker():
                     wallet = future_to_wallet[future]
                     try:
                         wallet_positions = future.result()
+                        _LAST_GOOD_POSITIONS[wallet] = wallet_positions
                         positions.extend(wallet_positions)
                     except Exception as e:
-                        print(f"[Position fetch error] {wallet} -> {repr(e)}")
+                        failed_wallets += 1
+                        # keep the last good positions for this wallet instead of dropping them
+                        positions.extend(_LAST_GOOD_POSITIONS.get(wallet, []))
+                        if failed_wallets <= 5:
+                            print(f"[Position fetch error] {wallet} -> {repr(e)}")
+            if failed_wallets:
+                print(f"[Position fetch] {failed_wallets} wallet(s) failed this refresh; kept last good positions where available")
 
             new_lookup = build_position_lookup(positions)
             with _POSITION_CACHE_LOCK:
@@ -2738,13 +2747,28 @@ def _start_position_refresh_thread():
     )
 
 
+POSITION_FETCH_MAX_WORKERS = 15  # v2 rate-limits bursts (429); 100 parallel position calls tripped it
+POSITION_FETCH_429_RETRIES = 3
+_LAST_GOOD_POSITIONS = {}  # wallet -> last successfully fetched positions (used if a refresh fails)
+
+
 def load_positions(user_wallet: str):
     # Data API v2. filter_amount=1 matches the v1 default minimum of 1 share.
-    return fetch_data_api_v2(
-        "positions",
-        {"user": user_wallet, "limit": 100, "filter_amount": 1},
-        renames=_V2_POSITION_RENAMES,
-    )
+    # Retries HTTP 429 with jittered backoff before giving up.
+    last_error = None
+    for attempt in range(POSITION_FETCH_429_RETRIES + 1):
+        try:
+            return fetch_data_api_v2(
+                "positions",
+                {"user": user_wallet, "limit": 100, "filter_amount": 1},
+                renames=_V2_POSITION_RENAMES,
+            )
+        except Exception as e:
+            last_error = e
+            if "429" not in repr(e) or attempt >= POSITION_FETCH_429_RETRIES:
+                raise
+            time.sleep((1.5 * (attempt + 1)) + random.random())
+    raise last_error
 
 
 def build_position_lookup(positions):
