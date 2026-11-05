@@ -8678,6 +8678,8 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     global CACHED_POSITION_LOOKUP
 
     PIPELINE_CYCLE_COUNT += 1
+    _pt_prev = time.time()
+    _pt_marks = []
 
     all_trades = []
 
@@ -8699,6 +8701,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         f"tracked_wallets_total={len(TRACKED_WALLETS)}"
     )
 
+    _pt_marks.append(("fetch", time.time()))
     for wallet in wallets_this_cycle:
         try:
             wallet_trades = load_activity(wallet)
@@ -8706,6 +8709,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         except Exception as e:
             print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
 
+    _pt_marks.append(("wallet_loop", time.time()))
     recent_trades, cutoff_ts, now_ts = filter_recent_trades(
         all_trades,
         hours_lookback=HOURS_LOOKBACK
@@ -8714,10 +8718,12 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
 
     wallet_market_notionals, market_notional_lookup = compute_wallet_market_baselines(valid_buy_trades)
 
+    _pt_marks.append(("filter_baselines", time.time()))
     accumulation_groups = group_accumulation_candidates(valid_buy_trades)
     accumulation_groups = mark_recent_paired_activity(accumulation_groups)
     accumulation_groups = apply_cross_wallet_sequence_roles(accumulation_groups)
 
+    _pt_marks.append(("grouping", time.time()))
     real_candidates = []
     filtered_counts = {
         "buy_count": 0,
@@ -8754,11 +8760,13 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         f"(cycle={PIPELINE_CYCLE_COUNT}, rows={len(CACHED_POSITIONS)})"
     )
 
+    _pt_marks.append(("candidate_loop", time.time()))
     position_lookup = CACHED_POSITION_LOOKUP
     fair_price_lookup = build_fair_price_lookup(accumulation_groups)
     wallet_profiles = apply_tracked_results_to_wallet_profiles(wallet_profiles)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
 
+    _pt_marks.append(("price_lookup_weights", time.time()))
     scored_candidates = attach_position_data_and_score(
         real_candidates,
         position_lookup,
@@ -8768,6 +8776,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         fair_price_lookup
     )
 
+    _pt_marks.append(("attach_score", time.time()))
     consensus_list = build_cross_wallet_consensus(
         accumulation_groups,
         scored_candidates,
@@ -8780,10 +8789,12 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         wallet_profiles
     )
 
+    _pt_marks.append(("consensus_upgrades", time.time()))
     scored_candidates = resolve_same_market_bet_conflicts(scored_candidates)
     scored_candidates = resolve_totals_family_bet_conflicts(scored_candidates)
     scored_candidates = resolve_side_family_bet_conflicts(scored_candidates)
 
+    _pt_marks.append(("conflicts", time.time()))
     wallet_profiles = update_wallet_profiles(
         wallet_profiles,
         accumulation_groups,
@@ -8793,6 +8804,7 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     wallet_profiles = apply_tracked_results_to_wallet_profiles(wallet_profiles)
     wallet_profiles = compute_dynamic_wallet_weights(wallet_profiles)
 
+    _pt_marks.append(("update_profiles", time.time()))
     active_wallets = filter_active_wallets(wallet_profiles)
     gated_wallets = apply_wallet_stability_gating(wallet_profiles, active_wallets)
 
@@ -8801,6 +8813,12 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
         scored_candidates
     )
 
+    _pt_marks.append(("gating_diag", time.time()))
+    _pt_out = []
+    for _pt_name, _pt_ts in _pt_marks:
+        _pt_out.append(f"{_pt_name}={_pt_ts - _pt_prev:.1f}s")
+        _pt_prev = _pt_ts
+    print(f"[PIPELINE TIMING] cycle={PIPELINE_CYCLE_COUNT} " + " ".join(_pt_out))
     return {
         "all_trades": all_trades,
         "recent_trades": recent_trades,
