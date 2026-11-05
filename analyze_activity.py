@@ -10102,6 +10102,9 @@ if __name__ == "__main__":
         cycle_bet_alerts = []
         rejected_candidates = []
         MAIN_LOOP_CYCLE_COUNT += 1
+        _cycle_t0 = time.time()
+        _pipe_t0 = _cycle_t0
+        _pipe_end = _cycle_t0
         run_deep_debug = (MAIN_LOOP_CYCLE_COUNT % DEEP_DEBUG_EVERY_N_CYCLES == 0)
         run_heavy_postprocess = (MAIN_LOOP_CYCLE_COUNT % HEAVY_POSTPROCESS_EVERY_N_CYCLES == 0)
 
@@ -10131,10 +10134,12 @@ if __name__ == "__main__":
                 last_tracked_bet_resolution_bucket = current_tracked_bet_resolution_bucket
 
             wallet_result_rows = summarize_tracked_bets_by_wallet(tracked_bets)
+            _pipe_t0 = time.time()
             result = run_pipeline(
                 wallet_profiles,
                 wallet_result_rows=wallet_result_rows,
             )
+            _pipe_end = time.time()
             wallet_profiles = result["wallet_profiles"]
 
             if "alert_decision_counts" in locals():
@@ -11628,6 +11633,14 @@ if __name__ == "__main__":
         if SHADOW_BETS_DIRTY:
             save_shadow_bets()
 
+        _now = time.time()
+        print(
+            f"[CYCLE TIMING] cycle={MAIN_LOOP_CYCLE_COUNT} "
+            f"pre_pipeline={_pipe_t0 - _cycle_t0:.1f}s "
+            f"pipeline={_pipe_end - _pipe_t0:.1f}s "
+            f"post_pipeline={_now - _pipe_end:.1f}s "
+            f"total={_now - _cycle_t0:.1f}s"
+        )
         print(f"Sleeping for {POLL_SECONDS} seconds...")
         print("=" * 80)
         time.sleep(POLL_SECONDS)
