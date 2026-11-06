@@ -361,6 +361,7 @@ ACTIVITY_BUCKET_COUNT = 2
 # time - this only changes how fast the same data arrives, not what data is
 # used or how it is scored.
 WALLET_FETCH_MAX_WORKERS = 100
+ACTIVITY_FETCH_MAX_WORKERS = 12  # v2 rate-limits bursts (429); position refresh uses 15
 
 RUNTIME_SUMMARY_ONLY = True
 MAIN_LOOP_CYCLE_COUNT = 0
@@ -8702,12 +8703,20 @@ def run_pipeline(wallet_profiles, wallet_result_rows=None):
     )
 
     _pt_marks.append(("fetch", time.time()))
+    _fetched = {}
+    with ThreadPoolExecutor(max_workers=ACTIVITY_FETCH_MAX_WORKERS) as _executor:
+        _future_to_wallet = {
+            _executor.submit(load_activity, _w): _w
+            for _w in wallets_this_cycle
+        }
+        for _future in as_completed(_future_to_wallet):
+            _w = _future_to_wallet[_future]
+            try:
+                _fetched[_w] = _future.result()
+            except Exception as e:
+                print(f"[Wallet fetch error] {_w} -> {repr(e)}")
     for wallet in wallets_this_cycle:
-        try:
-            wallet_trades = load_activity(wallet)
-            all_trades.extend(wallet_trades)
-        except Exception as e:
-            print(f"[Wallet fetch error] {wallet} -> {repr(e)}")
+        all_trades.extend(_fetched.get(wallet, []))
 
     _pt_marks.append(("wallet_loop", time.time()))
     recent_trades, cutoff_ts, now_ts = filter_recent_trades(
