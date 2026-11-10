@@ -5538,6 +5538,11 @@ PRE_START_DIGEST_CONFLICT_SCORE_MARGIN = 10
 # milestone only sends when the pick changed (different side, rating or stake), so you are not
 # told the same thing twice.
 PRE_START_DIGEST_RESEND_FINAL_BET = False
+# A later digest that backs the OPPOSITE team of a side pick already sent for the same game is
+# suppressed unless its score beats the earlier pick's score by more than
+# PRE_START_DIGEST_REVERSAL_SCORE_MARGIN; then it is sent, labeled REVERSAL. Set the margin to
+# None to turn the check off.
+PRE_START_DIGEST_REVERSAL_SCORE_MARGIN = 10
 
 
 def load_pre_start_digest_state():
@@ -5670,6 +5675,32 @@ def _digest_total_direction(rec):
     return None
 
 
+def check_digest_reversal(side_pick, entry):
+    """Compare a new side pick with the side pick already sent for this game.
+
+    Returns None (no conflict / nothing sent before / check off), or a dict:
+    {"action": "send" | "suppress", "earlier_label": str, "earlier_score": int, "new_score": int}.
+    """
+    margin = PRE_START_DIGEST_REVERSAL_SCORE_MARGIN
+    if margin is None or side_pick is None or not isinstance(entry, dict):
+        return None
+    prev = entry.get("side_sent")
+    if not isinstance(prev, dict) or not prev.get("slug"):
+        return None
+    new_stance = _digest_side_stance(side_pick)
+    prev_stance = _digest_side_stance(prev)
+    if not new_stance or not prev_stance or not _digest_sides_conflict(prev_stance, new_stance):
+        return None
+    prev_score = parse_int(prev.get("model_score"), 0)
+    new_score = parse_int(side_pick.get("model_score"), 0)
+    return {
+        "action": "send" if new_score - prev_score > margin else "suppress",
+        "earlier_label": f"{_digest_pick_label(prev)} (score {prev_score})",
+        "earlier_score": prev_score,
+        "new_score": new_score,
+    }
+
+
 def select_digest_picks(qualifying):
     """Choose what one game's notification contains from its BET-level recommendations.
 
@@ -5770,8 +5801,13 @@ def build_pre_start_digest_message(pick, milestone, total_pick=None):
     start_text, _ = format_event_start(pick.get("event_start_time"))
     start_line = f"Start: {start_text} CT ({mts}m)" if start_text else f"Starts in {mts}m"
 
+    reversal = pick.get("reversal_of")
+
     def assemble(detailed):
-        lines = [f"{market}", start_line] + _digest_block_lines(pick, detailed)
+        lines = [f"{market}", start_line]
+        if reversal:
+            lines.append(f"REVERSAL: replaces earlier pick {reversal}")
+        lines += _digest_block_lines(pick, detailed)
         if total_pick:
             lines.append(f"ALSO BET - {str(total_pick.get('market') or total_pick.get('slug') or '').strip()}")
             lines += _digest_block_lines(total_pick, detailed=False)
@@ -5782,7 +5818,7 @@ def build_pre_start_digest_message(pick, milestone, total_pick=None):
         body = assemble(False)
     if len(body) > 950:
         body = body[:947] + "..."
-    title = f"[{INSTANCE_LABEL}] T-{milestone}m {short_market}"
+    title = f"[{INSTANCE_LABEL}] T-{milestone}m {'REVERSAL ' if reversal else ''}{short_market}"
     return title[:240], body
 
 
@@ -5924,6 +5960,28 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True, on_send=Non
                 p.get("recommended_stake_pct"),
             ]
 
+        # Reversal check: does this side pick back the other team from a pick already sent?
+        reversal = check_digest_reversal(side_pick, entry)
+        if reversal is not None:
+            if reversal["action"] == "suppress":
+                print(
+                    f"[PRE-START DIGEST] {event_key} SUPPRESSED reversal: {_digest_pick_label(side_pick)} "
+                    f"(score {reversal['new_score']}) opposes already-sent {reversal['earlier_label']}"
+                )
+                side_pick = None
+                headline = total_pick
+                pick = dict(headline) if headline else None
+                secondary_total = None
+                # Keep the total only if it is new; never repeat an unchanged total.
+                if headline is None or entry.get("last_total_sig") == _pick_sig(headline):
+                    continue
+            else:
+                pick["reversal_of"] = reversal["earlier_label"]
+                print(
+                    f"[PRE-START DIGEST] {event_key} REVERSAL: {_digest_pick_label(side_pick)} "
+                    f"(score {reversal['new_score']}) replaces {reversal['earlier_label']}"
+                )
+
         sig = _pick_sig(headline) + (_pick_sig(secondary_total) if secondary_total else [])
         is_first = entry.get("last_sig") is None
         changed = (not is_first) and entry.get("last_sig") != sig
@@ -5942,6 +6000,15 @@ def run_pre_start_digests(recommendations, state, now_ts, send=True, on_send=Non
             sent = send_pre_start_digest_push(title, body)
         entry["last_sig"] = sig
         entry["last_ts"] = int(now_ts)
+        if side_pick is not None:
+            entry["side_sent"] = {
+                "slug": side_pick.get("slug"),
+                "outcome": side_pick.get("outcome"),
+                "market": side_pick.get("market"),
+                "model_score": side_pick.get("model_score"),
+            }
+        total_sent = secondary_total if secondary_total else (headline if _digest_market_kind(headline.get("slug")) == "total" else None)
+        entry["last_total_sig"] = _pick_sig(total_sent) if total_sent else entry.get("last_total_sig")
         results.append((event_key, target, title, body, sent))
         if sent and on_send is not None:
             try:
