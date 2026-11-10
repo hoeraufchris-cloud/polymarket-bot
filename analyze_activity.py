@@ -465,6 +465,8 @@ BET_ALERT_PRE_EARLY_SCORE_BONUS = 5
 BET_ALERT_PRE_LEADER_SCORE_PENALTY = 5
 
 INSIDER_DIAGNOSTICS_ENABLED = True
+INSIDER_DIAGNOSTICS_ROTATE_BYTES = 100 * 1024 * 1024  # keep at most one older copy (.1)
+INSIDER_DIAGNOSTICS_DEDUPE_TAIL_BYTES = 2 * 1024 * 1024  # duplicate check only reads this much of the end
 INSIDER_DIAGNOSTIC_MIN_NOTIONAL = 500
 INSIDER_DIAGNOSTIC_MIN_SIZE_RATIO = 3.0
 INSIDER_DIAGNOSTIC_STRONG_SIZE_RATIO = 10.0
@@ -5221,15 +5223,35 @@ def append_insider_diagnostics_csv(scored_candidates, now_ts):
         and os.path.getsize(INSIDER_DIAGNOSTICS_CSV_PATH) > 0
     )
 
+    # Keep the volume from filling up: once the file passes the cap, keep it as ONE older copy
+    # (.1, replacing any previous .1) and start a fresh file with a header.
+    if file_exists:
+        try:
+            if os.path.getsize(INSIDER_DIAGNOSTICS_CSV_PATH) > INSIDER_DIAGNOSTICS_ROTATE_BYTES:
+                os.replace(INSIDER_DIAGNOSTICS_CSV_PATH, INSIDER_DIAGNOSTICS_CSV_PATH + ".1")
+                file_exists = False
+                print(f"[INSIDER CSV] rotated (> {INSIDER_DIAGNOSTICS_ROTATE_BYTES // (1024 * 1024)} MB)")
+        except Exception as e:
+            print(f"[INSIDER CSV ROTATE ERROR] {repr(e)}")
+
+    # export_key starts with the 5-minute bucket, so duplicates can only be in the most
+    # recent rows. Read just the tail of the file instead of the whole thing every cycle.
     existing_keys = set()
 
     if file_exists:
         try:
-            with open(INSIDER_DIAGNOSTICS_CSV_PATH, "r", newline="", encoding="utf-8") as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    export_key = str(row.get("export_key", "") or "").strip()
-                    if export_key:
+            size = os.path.getsize(INSIDER_DIAGNOSTICS_CSV_PATH)
+            with open(INSIDER_DIAGNOSTICS_CSV_PATH, "rb") as f:
+                start = max(0, size - INSIDER_DIAGNOSTICS_DEDUPE_TAIL_BYTES)
+                f.seek(start)
+                tail = f.read().decode("utf-8", errors="ignore")
+            lines = tail.splitlines()
+            if start > 0 and lines:
+                lines = lines[1:]  # first line is probably cut in half
+            for row in csv.reader(lines):
+                if row:
+                    export_key = str(row[0] or "").strip()
+                    if export_key and export_key != "export_key":
                         existing_keys.add(export_key)
         except Exception as e:
             print(f"[INSIDER CSV READ ERROR] {repr(e)}")
