@@ -270,6 +270,18 @@ def is_market_closed(market_data):
     return False
 
 
+def is_void_market(market_data):
+    """True when a two-outcome market settled exactly 50/50 (no winner)."""
+    prices = safe_json_loads(market_data.get("outcomePrices"))
+    if not isinstance(prices, list) or len(prices) != 2:
+        return False
+    try:
+        a, b = (float(x) for x in prices)
+    except Exception:
+        return False
+    return abs(a - 0.5) <= 0.005 and abs(b - 0.5) <= 0.005
+
+
 def choose_result(bet, market_data):
     """
     Returns:
@@ -331,7 +343,18 @@ def choose_result(bet, market_data):
         except Exception:
             pass
 
-    return True, None, winning_outcome, resolution_price, resolved_ts
+    # Market is closed but no winner could be read. Previously this returned
+    # resolved=True with result=None, which exported blank Result / Winning
+    # Outcome rows to the sheet and inflated wallets' resolved-bet counts.
+    if is_void_market(market_data):
+        # Cancelled / walkover / postponed markets settle exactly 50/50.
+        # resolved stays False so no WIN/LOSS stats or sheet rows are created;
+        # it is re-checked each run in case the market later settles.
+        return False, "VOID", "Void", 0.5, resolved_ts
+
+    # Closed, but winner not published yet (e.g. UMA still settling): leave
+    # unresolved so the next run retries it.
+    return False, None, winning_outcome, resolution_price, resolved_ts
 
 
 def iter_bets(data):

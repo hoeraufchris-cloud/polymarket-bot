@@ -170,6 +170,18 @@ def _to_row_base(bet):
     }
 
 
+EXPORTABLE_RESULTS = {"WIN", "LOSS"}
+
+
+def is_exportable_bet(bet):
+    """Only settled bets with a real result and winning outcome reach the sheet."""
+    return (
+        bet.get("resolved") is True
+        and str(bet.get("result") or "").strip().upper() in EXPORTABLE_RESULTS
+        and str(bet.get("winning_outcome") or "").strip() != ""
+    )
+
+
 def row_to_values(row_dict):
     return [row_dict.get(header, "") for header in RAW_HEADERS]
 
@@ -222,6 +234,12 @@ def load_google_sheets_credentials(scopes):
 
 def push_to_google_sheets(rows, snapshot_clv_by_row_key=None):
     snapshot_clv_by_row_key = snapshot_clv_by_row_key or {}
+    # Last line of defence: never append/update a row without a settled result.
+    rows = [
+        r for r in rows
+        if str(r.get("Result", "") or "").strip().upper() in EXPORTABLE_RESULTS
+        and str(r.get("Winning Outcome", "") or "").strip() != ""
+    ]
     print("=== GOOGLE SHEETS PUSH START ===")
     print(f"Spreadsheet ID: {SPREADSHEET_ID}")
     print(f"Sheet name: {SHEET_NAME}")
@@ -346,7 +364,7 @@ def main():
     tracked = load_tracked_bets()
     bets = [bet for bet in tracked.values() if isinstance(bet, dict)]
     deduped = dedupe_bets(bets)
-    resolved_deduped = [bet for bet in deduped if bet.get("resolved") is True]
+    resolved_deduped = [bet for bet in deduped if is_exportable_bet(bet)]
     rows = [to_row(bet) for bet in resolved_deduped]
 
     clv_tracker = {} if SHADOW_MODE else load_clv_tracker()
