@@ -580,6 +580,22 @@ ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK = 35.0
 ALERT_QUALITY_RECOVERY_WINDOW_BETS = 25
 ALERT_QUALITY_RECOVERY_MIN_ROI_PCT = 5.0
 _BLOCK_RECOVERY_ACTIVE = set()
+
+# Trailing-window dynamic block v3 (time-aware). ENFORCE=False is a dry run:
+# it only logs [DYNAMIC BLOCK DRYRUN] lines; the legacy rule stays in force.
+# Window = all resolved signals from the last MIN_DAYS days, or the last
+# WINDOW_BETS signals if that is more (nothing older than MAX_AGE_DAYS).
+ALERT_QUALITY_TRAILING_ENFORCE = False
+ALERT_QUALITY_TRAILING_WINDOW_BETS = 30
+ALERT_QUALITY_TRAILING_MIN_DAYS = 14
+ALERT_QUALITY_TRAILING_MAX_AGE_DAYS = 90
+ALERT_QUALITY_TRAILING_MIN_BETS_TO_BLOCK = 20
+ALERT_QUALITY_TRAILING_MIN_BETS_TO_RELEASE = 25
+ALERT_QUALITY_TRAILING_BLOCK_ROI_PCT = -10.0
+ALERT_QUALITY_TRAILING_TRUSTED_BLOCK_ROI_PCT = -20.0
+ALERT_QUALITY_TRAILING_RELEASE_ROI_PCT = 5.0
+ALERT_QUALITY_TRAILING_MAX_WIN_UNITS = 3.0
+_DYNAMIC_BLOCK_ACTIVE = set()
 ALERT_QUALITY_PREGAME_EVENISH_MIN_SCORE = 85
 ALERT_QUALITY_PREGAME_EVENISH_MIN_CONSENSUS = 70
 ALERT_QUALITY_PREGAME_EVENISH_MIN_SIZE_RATIO = 3.0
@@ -2839,6 +2855,144 @@ def init_wallet_profiles(tracked_wallets):
     return profiles
 
 
+def apply_trailing_block_state(wallet_profiles, tracked_rows, shadow_rows, enforce=False, now_ts=None):
+    """Trailing-window dynamic block (time-aware).
+
+    Statistic: flat 1u ROI at alert price over the wallet's window: every
+    resolved signal from the last ALERT_QUALITY_TRAILING_MIN_DAYS days, or the
+    last ALERT_QUALITY_TRAILING_WINDOW_BETS signals if that is more; signals
+    older than MAX_AGE_DAYS are ignored. Live tracked alerts and shadow signals
+    blocked as poor_tracked_results are combined. One winning bet counts at
+    most ALERT_QUALITY_TRAILING_MAX_WIN_UNITS. Proven wallets (100+ resolved
+    live bets at +10% or better) need a deeper slump to be blocked. Between the
+    block and release thresholds a wallet keeps its previous state, read from
+    the data (was its most recent signal a shadow signal?) so it survives
+    restarts. A released wallet stays on probation (stake cap) while shadow
+    signals remain inside its window.
+
+    enforce=False only logs what would happen; nothing is blocked.
+    """
+    now_ts = float(now_ts or time.time())
+    rows = {}
+    for key, row in (tracked_rows or {}).items():
+        if isinstance(row, dict):
+            rows[key] = (row, False)
+    for key, row in list((shadow_rows or {}).items()):
+        if (
+            isinstance(row, dict)
+            and key not in rows
+            and str(row.get("shadow_reason", "") or "").startswith("poor_tracked_results")
+        ):
+            rows[key] = (row, True)
+
+    resolved_items = {}
+    latest = {}
+    for row, is_shadow in rows.values():
+        wallet = str(row.get("wallet", "") or "").strip().lower()
+        if not wallet:
+            continue
+        try:
+            ts = int(row.get("alert_ts", 0) or 0)
+        except Exception:
+            ts = 0
+        prev = latest.get(wallet)
+        if prev is None or ts >= prev[0]:
+            latest[wallet] = (ts, is_shadow)
+        if not row.get("resolved"):
+            continue
+        result = str(row.get("result", "") or "").strip().upper()
+        if result not in ("WIN", "LOSS"):
+            continue
+        try:
+            price = float(row.get("current_price_at_alert"))
+        except Exception:
+            continue
+        if not (0.02 <= price <= 0.98):
+            continue
+        if result == "WIN":
+            units = min(1.0 / price - 1.0, ALERT_QUALITY_TRAILING_MAX_WIN_UNITS)
+        else:
+            units = -1.0
+        resolved_items.setdefault(wallet, []).append((ts, units, is_shadow))
+
+    results = {}
+    for wallet, items in resolved_items.items():
+        items.sort(key=lambda x: x[0])
+        eligible = [it for it in items if it[0] >= now_ts - ALERT_QUALITY_TRAILING_MAX_AGE_DAYS * 86400]
+        if not eligible:
+            continue
+        recent = [it for it in eligible if it[0] >= now_ts - ALERT_QUALITY_TRAILING_MIN_DAYS * 86400]
+        if len(recent) > ALERT_QUALITY_TRAILING_WINDOW_BETS:
+            tail = recent
+        else:
+            tail = eligible[-ALERT_QUALITY_TRAILING_WINDOW_BETS:]
+        n = len(tail)
+        roi = sum(u for _, u, _ in tail) / n * 100.0
+        window_days = round((now_ts - tail[0][0]) / 86400.0, 1)
+
+        live_units = [u for _, u, sh in items if not sh]
+        trusted = (
+            len(live_units) >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED
+            and (sum(live_units) / len(live_units) * 100.0) >= WALLET_GUARDRAIL_TRUSTED_MIN_ROI
+        )
+        block_roi = (
+            ALERT_QUALITY_TRAILING_TRUSTED_BLOCK_ROI_PCT
+            if trusted else ALERT_QUALITY_TRAILING_BLOCK_ROI_PCT
+        )
+        prev_blocked = bool(latest.get(wallet, (0, False))[1])
+
+        if n >= ALERT_QUALITY_TRAILING_MIN_BETS_TO_BLOCK and roi <= block_roi:
+            blocked = True
+        elif n >= ALERT_QUALITY_TRAILING_MIN_BETS_TO_RELEASE and roi >= ALERT_QUALITY_TRAILING_RELEASE_ROI_PCT:
+            blocked = False
+        else:
+            blocked = prev_blocked
+
+        probation = (not blocked) and any(sh for _, _, sh in tail)
+        results[wallet] = (blocked, probation, n, round(roi, 1), trusted, window_days)
+
+    tag = "DYNAMIC BLOCK" if enforce else "DYNAMIC BLOCK DRYRUN"
+    for wallet, (blocked, probation, n, roi, trusted, window_days) in results.items():
+        profile = wallet_profiles.get(wallet)
+        if not isinstance(profile, dict):
+            continue
+        profile["trailing_bets"] = n
+        profile["trailing_roi_pct"] = roi
+        profile["trailing_trusted"] = trusted
+        profile["trailing_window_days"] = window_days
+        if enforce:
+            profile["dynamic_blocked"] = blocked
+            profile["dynamic_block_probation"] = probation
+
+        if blocked and wallet not in _DYNAMIC_BLOCK_ACTIVE:
+            _DYNAMIC_BLOCK_ACTIVE.add(wallet)
+            print(
+                f"[{tag}] wallet={wallet[-8:]} would_block={not enforce} "
+                f"trailing_{n}_roi={roi}% window_days={window_days} trusted={trusted}"
+            )
+        elif (not blocked) and wallet in _DYNAMIC_BLOCK_ACTIVE:
+            _DYNAMIC_BLOCK_ACTIVE.discard(wallet)
+            print(
+                f"[{tag}] wallet={wallet[-8:]} released "
+                f"trailing_{n}_roi={roi}% window_days={window_days}"
+            )
+
+        if enforce:
+            if probation:
+                _BLOCK_RECOVERY_ACTIVE.add(wallet)
+            else:
+                _BLOCK_RECOVERY_ACTIVE.discard(wallet)
+
+    if enforce:
+        for wallet, profile in wallet_profiles.items():
+            if wallet in results or not isinstance(profile, dict):
+                continue
+            profile["dynamic_blocked"] = False
+            profile["dynamic_block_probation"] = False
+            _DYNAMIC_BLOCK_ACTIVE.discard(wallet)
+            _BLOCK_RECOVERY_ACTIVE.discard(wallet)
+
+
 def update_wallet_profiles(wallet_profiles, accumulation_groups, scored_candidates):
     scored_index = {}
     for g in scored_candidates:
@@ -3009,63 +3163,72 @@ def apply_tracked_results_to_wallet_profiles(wallet_profiles):
 
         profile["results_confidence"] = round(min(1.0, resolved_bets / 20.0), 4)
 
-    # Block recovery: trailing flat 1u ROI over each wallet's last N resolved
-    # signals (live tracked alerts + shadow signals blocked as poor_tracked_results).
+    if not ALERT_QUALITY_TRAILING_ENFORCE:
+        # Block recovery: trailing flat 1u ROI over each wallet's last N resolved
+        # signals (live tracked alerts + shadow signals blocked as poor_tracked_results).
+        try:
+            _rec_rows = {}
+            for _k, _row in tracked_bets_data.items():
+                if isinstance(_row, dict):
+                    _rec_rows[_k] = _row
+            for _k, _row in list((SHADOW_BETS or {}).items()):
+                if (
+                    isinstance(_row, dict)
+                    and _k not in _rec_rows
+                    and str(_row.get("shadow_reason", "") or "").startswith("poor_tracked_results")
+                ):
+                    _rec_rows[_k] = _row
+            _per_wallet = {}
+            for _row in _rec_rows.values():
+                if not _row.get("resolved"):
+                    continue
+                _res = str(_row.get("result", "") or "").strip().upper()
+                if _res not in ("WIN", "LOSS"):
+                    continue
+                _w = str(_row.get("wallet", "") or "").strip().lower()
+                try:
+                    _price = float(_row.get("current_price_at_alert"))
+                except Exception:
+                    continue
+                if not _w or not (0.02 <= _price <= 0.98):
+                    continue
+                _units = (1.0 / _price - 1.0) if _res == "WIN" else -1.0
+                _per_wallet.setdefault(_w, []).append((int(_row.get("alert_ts", 0) or 0), _units))
+            for _w, _items in _per_wallet.items():
+                if _w not in wallet_profiles:
+                    continue
+                _items.sort(key=lambda x: x[0])
+                _tail = _items[-ALERT_QUALITY_RECOVERY_WINDOW_BETS:]
+                _prof = wallet_profiles[_w]
+                _prof["recovery_bets"] = len(_tail)
+                _prof["recovery_roi_pct"] = round(sum(u for _, u in _tail) / len(_tail) * 100, 1)
+                _wr = _prof.get("resolved_win_rate")
+                _poor = (
+                    int(_prof.get("resolved_bets", 0) or 0) >= ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK
+                    and _wr is not None
+                    and _wr <= ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK
+                )
+                _ok = (
+                    _poor
+                    and len(_tail) >= ALERT_QUALITY_RECOVERY_WINDOW_BETS
+                    and _prof["recovery_roi_pct"] >= ALERT_QUALITY_RECOVERY_MIN_ROI_PCT
+                )
+                if _ok and _w not in _BLOCK_RECOVERY_ACTIVE:
+                    _BLOCK_RECOVERY_ACTIVE.add(_w)
+                    print(f"[BLOCK RECOVERY] wallet={_w[-8:]} unblocked trailing_{len(_tail)}_roi={_prof['recovery_roi_pct']}%")
+                elif not _ok and _w in _BLOCK_RECOVERY_ACTIVE:
+                    _BLOCK_RECOVERY_ACTIVE.discard(_w)
+                    print(f"[BLOCK RE-ENGAGED] wallet={_w[-8:]} trailing_{len(_tail)}_roi={_prof['recovery_roi_pct']}%")
+        except Exception as _rec_err:
+            print(f"[BLOCK RECOVERY ERROR] {repr(_rec_err)}")
+
     try:
-        _rec_rows = {}
-        for _k, _row in tracked_bets_data.items():
-            if isinstance(_row, dict):
-                _rec_rows[_k] = _row
-        for _k, _row in list((SHADOW_BETS or {}).items()):
-            if (
-                isinstance(_row, dict)
-                and _k not in _rec_rows
-                and str(_row.get("shadow_reason", "") or "").startswith("poor_tracked_results")
-            ):
-                _rec_rows[_k] = _row
-        _per_wallet = {}
-        for _row in _rec_rows.values():
-            if not _row.get("resolved"):
-                continue
-            _res = str(_row.get("result", "") or "").strip().upper()
-            if _res not in ("WIN", "LOSS"):
-                continue
-            _w = str(_row.get("wallet", "") or "").strip().lower()
-            try:
-                _price = float(_row.get("current_price_at_alert"))
-            except Exception:
-                continue
-            if not _w or not (0.02 <= _price <= 0.98):
-                continue
-            _units = (1.0 / _price - 1.0) if _res == "WIN" else -1.0
-            _per_wallet.setdefault(_w, []).append((int(_row.get("alert_ts", 0) or 0), _units))
-        for _w, _items in _per_wallet.items():
-            if _w not in wallet_profiles:
-                continue
-            _items.sort(key=lambda x: x[0])
-            _tail = _items[-ALERT_QUALITY_RECOVERY_WINDOW_BETS:]
-            _prof = wallet_profiles[_w]
-            _prof["recovery_bets"] = len(_tail)
-            _prof["recovery_roi_pct"] = round(sum(u for _, u in _tail) / len(_tail) * 100, 1)
-            _wr = _prof.get("resolved_win_rate")
-            _poor = (
-                int(_prof.get("resolved_bets", 0) or 0) >= ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK
-                and _wr is not None
-                and _wr <= ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK
-            )
-            _ok = (
-                _poor
-                and len(_tail) >= ALERT_QUALITY_RECOVERY_WINDOW_BETS
-                and _prof["recovery_roi_pct"] >= ALERT_QUALITY_RECOVERY_MIN_ROI_PCT
-            )
-            if _ok and _w not in _BLOCK_RECOVERY_ACTIVE:
-                _BLOCK_RECOVERY_ACTIVE.add(_w)
-                print(f"[BLOCK RECOVERY] wallet={_w[-8:]} unblocked trailing_{len(_tail)}_roi={_prof['recovery_roi_pct']}%")
-            elif not _ok and _w in _BLOCK_RECOVERY_ACTIVE:
-                _BLOCK_RECOVERY_ACTIVE.discard(_w)
-                print(f"[BLOCK RE-ENGAGED] wallet={_w[-8:]} trailing_{len(_tail)}_roi={_prof['recovery_roi_pct']}%")
-    except Exception as _rec_err:
-        print(f"[BLOCK RECOVERY ERROR] {repr(_rec_err)}")
+        apply_trailing_block_state(
+            wallet_profiles, tracked_bets_data, SHADOW_BETS,
+            enforce=bool(ALERT_QUALITY_TRAILING_ENFORCE),
+        )
+    except Exception as _blk_err:
+        print(f"[DYNAMIC BLOCK ERROR] {repr(_blk_err)}")
 
     return wallet_profiles
 
@@ -9534,7 +9697,7 @@ def get_alert_quality_block_reason(g, wallet_profiles):
         return "invalid_candidate"
 
     wallet = str(g.get("wallet", "") or "").strip().lower()
-    if wallet in ALERT_QUALITY_BLOCKED_WALLETS:
+    if (not ALERT_QUALITY_TRAILING_ENFORCE) and wallet in ALERT_QUALITY_BLOCKED_WALLETS:
         return "blocked_wallet"
 
     wallet_profile = {}
@@ -9565,8 +9728,17 @@ def get_alert_quality_block_reason(g, wallet_profiles):
     except Exception:
         block_recovered = False
 
+    if ALERT_QUALITY_TRAILING_ENFORCE and wallet_profile.get("dynamic_blocked"):
+        try:
+            _tn = int(wallet_profile.get("trailing_bets", 0) or 0)
+            _tr = float(wallet_profile.get("trailing_roi_pct", 0.0) or 0.0)
+        except Exception:
+            _tn, _tr = 0, 0.0
+        return f"poor_tracked_results_{_tn}_bets_roi_{round(abs(_tr), 1)}pct_loss"
+
     if (
-        not block_recovered
+        not ALERT_QUALITY_TRAILING_ENFORCE
+        and not block_recovered
         and resolved_bets >= ALERT_QUALITY_MIN_RESOLVED_BETS_FOR_DYNAMIC_BLOCK
         and resolved_win_rate is not None
         and resolved_win_rate <= ALERT_QUALITY_MAX_WIN_RATE_FOR_DYNAMIC_BLOCK
