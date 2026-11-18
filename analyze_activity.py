@@ -585,7 +585,7 @@ _BLOCK_RECOVERY_ACTIVE = set()
 # it only logs [DYNAMIC BLOCK DRYRUN] lines; the legacy rule stays in force.
 # Window = all resolved signals from the last MIN_DAYS days, or the last
 # WINDOW_BETS signals if that is more (nothing older than MAX_AGE_DAYS).
-ALERT_QUALITY_TRAILING_ENFORCE = False
+ALERT_QUALITY_TRAILING_ENFORCE = True
 ALERT_QUALITY_TRAILING_WINDOW_BETS = 30
 ALERT_QUALITY_TRAILING_MIN_DAYS = 14
 ALERT_QUALITY_TRAILING_MAX_AGE_DAYS = 90
