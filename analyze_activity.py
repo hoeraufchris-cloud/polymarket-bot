@@ -3363,13 +3363,8 @@ def format_wallet_record(wallet_result_rows, wallet):
             guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
             if roi is not None and guardrail_resolved >= WALLET_ROI_DISPLAY_MIN_RESOLVED:
                 gross_roi_val = guardrail.get("gross_roi")
-                if gross_roi_val is not None and abs(float(gross_roi_val) - float(roi)) >= 0.05:
-                    roi_suffix = (
-                        f" | ROI: {round(float(roi), 1)}% net "
-                        f"({round(float(gross_roi_val), 1)}% gross, n={guardrail_resolved})"
-                    )
-                else:
-                    roi_suffix = f" | ROI: {round(float(roi), 1)}% (n={guardrail_resolved})"
+                net_label = " net" if gross_roi_val is not None and abs(float(gross_roi_val) - float(roi)) >= 0.05 else ""
+                roi_suffix = f" | ROI: {round(float(roi), 1)}%{net_label} (n={guardrail_resolved})"
     except Exception:
         roi_suffix = ""
 
@@ -10297,7 +10292,6 @@ def send_pushover_bet_alert(g):
             fee_line_block = ""
 
         alert_body = (
-            f"Source: {INSTANCE_LABEL}\n"
             f"{phase_label} | {market_text}\n"
             f"Bet: {outcome_text} | Stake: {stake_pct}%\n"
             f"Wallet: {wallet_short} | Record: {wallet_record}\n"
@@ -10307,7 +10301,7 @@ def send_pushover_bet_alert(g):
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
-            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str} | ROI: {leader_roi_display}"
+            f"Leader Size: {leader_size_display} | Ratio: {size_ratio_str}"
         )
 
         if len(alert_body) > 950:
