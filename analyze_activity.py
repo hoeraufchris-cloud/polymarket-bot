@@ -750,6 +750,26 @@ _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = 0.0
 WALLET_GUARDRAIL_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 
+# ---------------------------------------------------------------------------
+# Polymarket taker-fee awareness. We place IOC limit orders, i.e. we are the
+# TAKER, so every bet pays rate * p * (1 - p) per share (see fees.py). The
+# sheet's Bet Profit / Total ROI are gross of that fee, so wallet ROI used for
+# guardrails and shown in alerts is reduced by the wallet's stake-weighted
+# average fee drag. Set FEE_AWARE_ROI_ENABLED=0 to restore the old gross
+# behavior without a redeploy of code.
+# ---------------------------------------------------------------------------
+try:
+    import fees as poly_fees
+except Exception as _fees_import_error:
+    poly_fees = None
+    print(f"[FEES] fees module unavailable ({_fees_import_error!r}) -- ROI/alerts stay gross")
+
+FEE_AWARE_ROI_ENABLED = os.getenv("FEE_AWARE_ROI_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+FEE_CATEGORY = os.getenv("FEE_CATEGORY", "sports").strip().lower() or "sports"
+FEE_DRAG_FALLBACK_PRICE = 0.5  # used only when a wallet has no priced tracked bets
+FEE_DRAG_MIN_BETS_FOR_WALLET = 10
+
+
 def _wallet_guardrail_float(value, default=0.0):
     try:
         if value is None:
@@ -826,6 +846,87 @@ def ensure_all_bet_signals_csv_available():
             f"error={repr(e)}"
         )
         return False
+
+
+def load_wallet_fee_drag_pct():
+    """
+    Returns {wallet: stake-weighted average taker fee, in ROI percentage points}
+    plus an "__all__" entry for wallets with too little history.
+
+    Fee as a share of stake is rate * (1 - price), so the drag on ROI is exactly
+    that, weighted by how much we stake on each bet (stake_pct as the weight).
+    Uses resolved tracked bets when a wallet has enough of them, else all bets.
+    """
+    out = {}
+    if not (FEE_AWARE_ROI_ENABLED and poly_fees):
+        return out
+
+    try:
+        with open(TRACKED_BETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[FEES] tracked_bets_unreadable path={TRACKED_BETS_PATH} error={repr(e)}")
+        return out
+
+    rows = data.values() if isinstance(data, dict) else data
+    # wallet -> {"resolved": [sum, weight, n], "all": [sum, weight, n]}
+    acc = {}
+    total = {"resolved": [0.0, 0.0, 0], "all": [0.0, 0.0, 0]}
+
+    for bet in rows:
+        if not isinstance(bet, dict):
+            continue
+        wallet = str(bet.get("wallet", "") or "").strip().lower()
+        if not wallet:
+            continue
+        try:
+            price = float(bet.get("current_price_at_alert", bet.get("current_price")))
+        except (TypeError, ValueError):
+            continue
+        if not 0.0 < price < 1.0:
+            continue
+        try:
+            weight = float(bet.get("stake_pct") or 1.0)
+        except (TypeError, ValueError):
+            weight = 1.0
+        if weight <= 0:
+            weight = 1.0
+
+        fee_pct = poly_fees.fee_pct_of_stake(price, category=FEE_CATEGORY) * 100.0
+        buckets = ["all"] + (["resolved"] if bet.get("resolved") else [])
+        w_acc = acc.setdefault(wallet, {"resolved": [0.0, 0.0, 0], "all": [0.0, 0.0, 0]})
+        for b in buckets:
+            w_acc[b][0] += fee_pct * weight
+            w_acc[b][1] += weight
+            w_acc[b][2] += 1
+            total[b][0] += fee_pct * weight
+            total[b][1] += weight
+            total[b][2] += 1
+
+    def _avg(bucket_pair):
+        for b in ("resolved", "all"):
+            sum_, weight_, n_ = bucket_pair[b]
+            if n_ >= FEE_DRAG_MIN_BETS_FOR_WALLET and weight_ > 0:
+                return sum_ / weight_
+        return None
+
+    for wallet, bucket_pair in acc.items():
+        val = _avg(bucket_pair)
+        if val is not None:
+            out[wallet] = val
+    all_val = _avg(total)
+    if all_val is not None:
+        out["__all__"] = all_val
+
+    print(
+        "[FEES] wallet_fee_drag "
+        f"wallets={len(out) - (1 if '__all__' in out else 0)} "
+        f"avg_drag_pct={'%.2f' % all_val if all_val is not None else 'n/a'} "
+        f"category={FEE_CATEGORY}"
+    )
+    return out
+
+
 
 
 def load_wallet_performance_guardrails():
@@ -926,6 +1027,8 @@ def load_wallet_performance_guardrails():
         _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
         return guardrails
 
+    fee_drag_by_wallet = load_wallet_fee_drag_pct()
+
     for wallet, stats in wallet_rows.items():
         resolved = int(stats.get("resolved", 0) or 0)
         stake = float(stats.get("stake", 0.0) or 0.0)
@@ -935,6 +1038,16 @@ def load_wallet_performance_guardrails():
 
         if roi is None and stake > 0:
             roi = (profit / stake) * 100
+
+        # Fee-adjust ROI. roi from here on is NET of Polymarket taker fees;
+        # gross_roi keeps the sheet's number for reference.
+        gross_roi = roi
+        fee_drag_pct = None
+        if FEE_AWARE_ROI_ENABLED and poly_fees and roi is not None:
+            fee_drag_pct = fee_drag_by_wallet.get(wallet, fee_drag_by_wallet.get("__all__"))
+            if fee_drag_pct is None:
+                fee_drag_pct = poly_fees.fee_pct_of_stake(FEE_DRAG_FALLBACK_PRICE, category=FEE_CATEGORY) * 100.0
+            roi = roi - fee_drag_pct
 
         wins = int(stats.get("wins", 0) or 0)
         losses = int(stats.get("losses", 0) or 0)
@@ -980,6 +1093,8 @@ def load_wallet_performance_guardrails():
             "stake": round(stake, 2),
             "profit": round(profit, 2),
             "roi": roi,
+            "gross_roi": gross_roi,
+            "fee_drag_pct": fee_drag_pct,
             "win_rate": win_rate,
         }
 
@@ -3247,7 +3362,14 @@ def format_wallet_record(wallet_result_rows, wallet):
             roi = guardrail.get("roi")
             guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
             if roi is not None and guardrail_resolved >= WALLET_ROI_DISPLAY_MIN_RESOLVED:
-                roi_suffix = f" | ROI: {round(float(roi), 1)}% (n={guardrail_resolved})"
+                gross_roi_val = guardrail.get("gross_roi")
+                if gross_roi_val is not None and abs(float(gross_roi_val) - float(roi)) >= 0.05:
+                    roi_suffix = (
+                        f" | ROI: {round(float(roi), 1)}% net "
+                        f"({round(float(gross_roi_val), 1)}% gross, n={guardrail_resolved})"
+                    )
+                else:
+                    roi_suffix = f" | ROI: {round(float(roi), 1)}% (n={guardrail_resolved})"
     except Exception:
         roi_suffix = ""
 
@@ -10156,6 +10278,24 @@ def send_pushover_bet_alert(g):
         else:
             wallet_short = wallet
 
+        fee_line_block = ""
+        try:
+            if FEE_AWARE_ROI_ENABLED and poly_fees:
+                _cp = float(current_price)
+                if 0 < _cp < 1:
+                    _aip = poly_fees.all_in_price(_cp, category=FEE_CATEGORY)
+                    _fee_pct = poly_fees.fee_pct_of_stake(_cp, category=FEE_CATEGORY) * 100
+                    fee_line_block = f"All-in: {round(_aip * 100, 1)}c (fee {round(_fee_pct, 1)}% of stake)"
+                    try:
+                        _ep = float(entry_price)
+                        if 0 < _ep < 1:
+                            fee_line_block += f" | Net Edge: {((_ep / _aip) - 1) * 100:+.1f}%"
+                    except (TypeError, ValueError):
+                        pass
+                    fee_line_block += "\n"
+        except Exception:
+            fee_line_block = ""
+
         alert_body = (
             f"Source: {INSTANCE_LABEL}\n"
             f"{phase_label} | {market_text}\n"
@@ -10163,6 +10303,7 @@ def send_pushover_bet_alert(g):
             f"Wallet: {wallet_short} | Record: {wallet_record}\n"
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Est Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
+            f"{fee_line_block}"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"
