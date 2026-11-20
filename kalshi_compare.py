@@ -44,7 +44,7 @@ def _series_for(prefix):
 
 def parse_slug(slug):
     """'nba-lal-bos-2026-11-20' -> ('nba', ['lal','bos'], date) or None."""
-    m = re.match(r"^([a-z0-9]+)-([a-z0-9]{2,5})-([a-z0-9]{2,5})-(\d{4})-(\d{2})-(\d{2})$", str(slug or "").lower())
+    m = re.match(r"^([a-z0-9]+)-([a-z0-9]{2,10})-([a-z0-9]{2,10})-(\d{4})-(\d{2})-(\d{2})$", str(slug or "").lower())
     if not m:
         return None
     try:
@@ -114,7 +114,21 @@ def find_match(slug, outcome):
         and all(c.upper() in str(e.get("event_ticker", "")).upper() for c in codes)
     ]
     if not cands:
-        return None, f"no_event(series={series},token={token},open_events={len(events)})"
+        # College/other slugs use codes that differ from Kalshi's; fall back to date + team name.
+        out_l = str(outcome or "").strip().lower()
+        dated = [e for e in events if token in str(e.get("event_ticker", "")).upper()]
+        hits = []
+        for e in dated:
+            for m in e.get("markets") or []:
+                label = " ".join(str(m.get(k, "") or "") for k in ("yes_sub_title", "subtitle", "title")).lower()
+                if out_l and out_l in label:
+                    hits.append(m)
+        if len(hits) == 1:
+            m = hits[0]
+            return {"ticker": m.get("ticker"), "ask": _price(m, "yes_ask"),
+                    "bid": _price(m, "yes_bid"), "last": _price(m, "last_price")}, "ok_name_only"
+        return None, (f"no_event(series={series},token={token},open_events={len(events)},"
+                      f"dated={len(dated)},name_hits={len(hits)})")
     ev = cands[0]
     out = str(outcome or "").strip().lower()
     out_last = out.split()[-1] if out else ""
