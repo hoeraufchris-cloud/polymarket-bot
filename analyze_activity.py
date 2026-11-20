@@ -766,6 +766,12 @@ except Exception as _fees_import_error:
 
 FEE_AWARE_ROI_ENABLED = os.getenv("FEE_AWARE_ROI_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 FEE_CATEGORY = os.getenv("FEE_CATEGORY", "sports").strip().lower() or "sports"
+# Backtest (16k resolved alerts, net of fees): BETs where the all-in price is >5% worse than the
+# sharp's entry returned about -12.6% net ROI (n=610), negative in both halves of the data.
+# Downgrade those BETs to LEAN with a capped stake. Set VS_SHARP_LEAN_CAP_ENABLED=0 to disable.
+VS_SHARP_LEAN_CAP_ENABLED = os.getenv("VS_SHARP_LEAN_CAP_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+VS_SHARP_LEAN_CAP_THRESHOLD_PCT = float(os.getenv("VS_SHARP_LEAN_CAP_THRESHOLD_PCT", "-5"))
+VS_SHARP_LEAN_CAP_STAKE_PCT = int(os.getenv("VS_SHARP_LEAN_CAP_STAKE_PCT", "30"))
 FEE_DRAG_FALLBACK_PRICE = 0.5  # used only when a wallet has no priced tracked bets
 FEE_DRAG_MIN_BETS_FOR_WALLET = 10
 
@@ -4705,6 +4711,31 @@ def attach_position_data_and_score(
                         f"size_ratio={round(float(g.get('size_ratio', 0) or 0), 2)}, "
                         f"movement={round(abs(float(g.get('market_movement_cents', 0) or 0)), 2)}c)"
                     )
+
+        if (
+            VS_SHARP_LEAN_CAP_ENABLED
+            and poly_fees
+            and str(g.get("label", "") or "").upper() in {"BET", "STRONG BET"}
+        ):
+            try:
+                _vs_entry = float(g.get("wallet_entry_price") or 0)
+                _vs_cur = float(g.get("current_price") or 0)
+                if 0 < _vs_entry < 1 and 0 < _vs_cur < 1:
+                    _vs_aip = poly_fees.all_in_price(_vs_cur, category=FEE_CATEGORY)
+                    _vs_sharp_pct = ((_vs_entry / _vs_aip) - 1) * 100
+                    if _vs_sharp_pct <= VS_SHARP_LEAN_CAP_THRESHOLD_PCT:
+                        record_shadow_signal(g, "vs_sharp_lean_cap")
+                        g["label"] = "LEAN"
+                        g["stake_pct"] = min(
+                            int(float(g.get("stake_pct", 0) or 0)),
+                            VS_SHARP_LEAN_CAP_STAKE_PCT,
+                        )
+                        g["reason"] = (
+                            f"{g.get('reason', '')} | Downgraded: all-in price "
+                            f"{_vs_sharp_pct:+.1f}% vs sharp entry"
+                        ).strip(" |")
+            except (TypeError, ValueError):
+                pass
 
         if g.get("label") == "LEAN":
             lean_size_ratio = float(g.get("size_ratio", 0) or 0)
