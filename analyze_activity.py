@@ -200,6 +200,10 @@ def track_model_recommendation(recommendation, now_ts):
 import random
 import time
 import requests
+try:
+    import kalshi_compare
+except Exception:
+    kalshi_compare = None
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -10303,6 +10307,12 @@ def send_pushover_bet_alert(g):
             wallet_short = f"{wallet[:10]}...{wallet[-6:]}"
         else:
             wallet_short = wallet
+
+        if kalshi_compare:
+            try:
+                kalshi_compare.log_comparison(g, current_price)
+            except Exception:
+                pass
 
         fee_line_block = ""
         try:
