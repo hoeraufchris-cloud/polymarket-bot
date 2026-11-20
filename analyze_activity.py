@@ -10314,6 +10314,13 @@ def send_pushover_bet_alert(g):
             except Exception:
                 pass
 
+        kalshi_line_block = ""
+        if kalshi_compare:
+            try:
+                kalshi_line_block = kalshi_compare.alert_line(g, current_price)
+            except Exception:
+                kalshi_line_block = ""
+
         fee_line_block = ""
         try:
             if FEE_AWARE_ROI_ENABLED and poly_fees:
@@ -10339,6 +10346,7 @@ def send_pushover_bet_alert(g):
             f"Score: {score_display} | Drift: {round(float(g.get('market_movement_cents', 0) or 0), 2)}c\n"
             f"Est Now: {current_price_str}/{current_price_pct_str} | Sharp Entry: {entry_price_str}/{entry_price_pct_str}\n"
             f"{fee_line_block}"
+            f"{kalshi_line_block}"
             f"Followers: {followers_display}\n"
             f"Start: {start_str}\n"
             f"Last Bet Placed: {last_bet_str}\n"

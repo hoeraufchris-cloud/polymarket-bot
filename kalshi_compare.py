@@ -154,6 +154,7 @@ def log_comparison(g, pm_price):
     """Log-only. Never raises."""
     if not KALSHI_SHADOW_ENABLED:
         return
+    log_series_once()
     try:
         slug = g.get("slug") or g.get("market_slug")
         outcome = g.get("outcome")
@@ -170,3 +171,44 @@ def log_comparison(g, pm_price):
         )
     except Exception as exc:
         print(f"[KALSHI] error {type(exc).__name__}: {exc}")
+
+
+KALSHI_ALERT_LINE_ENABLED = os.getenv("KALSHI_ALERT_LINE_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+KALSHI_FEE_RATE = float(os.getenv("KALSHI_FEE_RATE", "0.07"))  # approx taker fee: rate * p * (1-p); verify at kalshi.com/fee-schedule
+PM_FEE_RATE = float(os.getenv("POLY_FEE_RATE_SPORTS", "0.05"))
+_series_logged = False
+
+
+def log_series_once():
+    """One-time log of Kalshi sports series tickers so DEFAULT_SERIES can be corrected from real data."""
+    global _series_logged
+    if _series_logged or not KALSHI_SHADOW_ENABLED:
+        return
+    _series_logged = True
+    try:
+        r = requests.get(f"{KALSHI_BASE}/series", params={"category": "Sports"}, timeout=TIMEOUT)
+        r.raise_for_status()
+        rows = [f"{x.get('ticker')}={str(x.get('title', ''))[:40]}" for x in (r.json().get("series") or [])]
+        for i in range(0, len(rows), 25):
+            print(f"[KALSHI] series[{i}-{i + 24} of {len(rows)}] " + " | ".join(rows[i:i + 25]))
+    except Exception as exc:
+        print(f"[KALSHI] series_list_error {type(exc).__name__}: {exc}")
+
+
+def alert_line(g, pm_price):
+    """'Kalshi all-in: 50.7c (+0.7c vs PM)\n' or '' when there is no confident match. Never raises."""
+    if not (KALSHI_SHADOW_ENABLED and KALSHI_ALERT_LINE_ENABLED):
+        return ""
+    try:
+        info, _ = find_match(g.get("slug") or g.get("market_slug"), g.get("outcome"))
+        pm = float(pm_price)
+        if not info or info.get("ask") is None or not 0 < pm < 1:
+            return ""
+        ka = float(info["ask"])
+        if not 0 < ka < 1:
+            return ""
+        k_all = ka + KALSHI_FEE_RATE * ka * (1 - ka)
+        p_all = pm + PM_FEE_RATE * pm * (1 - pm)
+        return f"Kalshi all-in: {k_all * 100:.1f}c ({(k_all - p_all) * 100:+.1f}c vs PM)\n"
+    except Exception:
+        return ""
