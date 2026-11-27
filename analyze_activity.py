@@ -556,6 +556,40 @@ WALLET_GUARDRAIL_TRUSTED_MIN_ROI = 10.0
 # Below this, ROI is too noisy to be meaningful (e.g. a 1-0 record is 0% or -100%).
 WALLET_ROI_DISPLAY_MIN_RESOLVED = 10
 
+# ---------------------------------------------------------------------------
+# Rolling (trailing-window) wallet ROI, net of taker fees. The alert shows this
+# instead of lifetime ROI, and the guardrail tiers (suppress / cap_lean /
+# trusted) are decided on it, because lifetime ROI lags a wallet that has cooled
+# off (or warmed up). When a wallet has fewer than WALLET_ROLLING_ROI_MIN_BETS
+# resolved bets in the window, everything falls back to lifetime ROI exactly as
+# before. Set WALLET_ROLLING_ROI_ENABLED=0 to restore lifetime-only behavior.
+#
+# Tiers use hysteresis: a wallet enters a tier at the thresholds above
+# (WALLET_GUARDRAIL_SUPPRESS_MAX_ROI / CAP_MAX_ROI / TRUSTED_MIN_ROI) but only
+# leaves it at the looser exit thresholds below, so a wallet hovering at a
+# threshold does not flip tier on every refresh. Trusted also still requires
+# WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED lifetime bets and a positive
+# lifetime net ROI (real history, not just a hot two weeks).
+# ---------------------------------------------------------------------------
+try:
+    import rolling_roi
+except Exception as _rolling_roi_import_error:
+    rolling_roi = None
+    print(f"[ROLLING ROI] module unavailable ({_rolling_roi_import_error!r}) -- ROI and tiers stay lifetime")
+
+WALLET_ROLLING_ROI_ENABLED = os.getenv("WALLET_ROLLING_ROI_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
+WALLET_ROLLING_ROI_DAYS = int(os.getenv("WALLET_ROLLING_ROI_DAYS", "14"))
+WALLET_ROLLING_ROI_MIN_BETS = int(os.getenv("WALLET_ROLLING_ROI_MIN_BETS", "30"))
+# Rolling tiers are OFF by default: the 14d number is shown in alerts, but suppress /
+# cap_lean / trusted stay on lifetime ROI. A Monte Carlo (11/27) showed 14d-ROI tiers are
+# noisy (SE ~13-18 pts at n=30-60) and no better than lifetime tiers + the dynamic block.
+# Set WALLET_ROLLING_TIERS_ENABLED=1 to decide tiers on the rolling number (with hysteresis).
+WALLET_ROLLING_TIERS_ENABLED = os.getenv("WALLET_ROLLING_TIERS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+WALLET_ROLLING_ROI_MAX_WIN_UNITS = 3.0  # one longshot win counts at most +3 units (matches the dynamic block)
+WALLET_GUARDRAIL_SUPPRESS_EXIT_ROI = -5.0   # leave suppress once rolling ROI is above this
+WALLET_GUARDRAIL_CAP_EXIT_ROI = 3.0         # leave cap_lean once rolling ROI is above this
+WALLET_GUARDRAIL_TRUSTED_EXIT_ROI = 7.0     # lose trusted once rolling ROI falls below this
+
 TRUSTED_NO_EDGE_AUTO_BET_ENABLED = True
 TRUSTED_NO_EDGE_AUTO_BET_MAX_USD = 1
 TRUSTED_NO_EDGE_AUTO_BET_MIN_SCORE = 78
@@ -751,6 +785,9 @@ def apply_phase_sequence_score_adjustment(score, g):
 
 _WALLET_PERFORMANCE_GUARDRAIL_CACHE = None
 _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = 0.0
+# Previous guardrail tier per wallet, kept in memory so rolling-ROI tiers can use
+# hysteresis. Resets on restart (the tier is then decided on enter thresholds only).
+_WALLET_GUARDRAIL_TIER_STATE = {}
 WALLET_GUARDRAIL_CACHE_TTL_SECONDS = 6 * 60 * 60
 
 
@@ -937,6 +974,63 @@ def load_wallet_fee_drag_pct():
     return out
 
 
+def load_wallet_rolling_roi():
+    """
+    Returns {wallet: {n, wins, losses, roi_net, roi_gross, window_days, ...}}:
+    each wallet's ROI over the last WALLET_ROLLING_ROI_DAYS days of resolved
+    tracked bets, net of Polymarket taker fees (per-bet exact fee, not an
+    average). Empty when disabled or tracked_bets.json is unreadable, in which
+    case callers fall back to lifetime ROI.
+    """
+    if not (WALLET_ROLLING_ROI_ENABLED and rolling_roi):
+        return {}
+
+    try:
+        with open(TRACKED_BETS_PATH, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[ROLLING ROI] tracked_bets_unreadable path={TRACKED_BETS_PATH} error={repr(e)}")
+        return {}
+
+    # When tiers are decided on this number, shadow rows created by performance-based
+    # restrictions must stay in the window. Otherwise a suppressed / capped wallet's
+    # sample shrinks, falls back to lifetime ROI and is silently released.
+    if WALLET_ROLLING_TIERS_ENABLED:
+        try:
+            with open(SHADOW_BETS_PATH, "r", encoding="utf-8") as f:
+                shadow = json.load(f)
+            rows = list(data.values()) if isinstance(data, dict) else list(data)
+            extra = [
+                r for r in (shadow.values() if isinstance(shadow, dict) else shadow)
+                if isinstance(r, dict)
+                and str(r.get("shadow_reason", "") or "").startswith(("poor_tracked_results", "wallet_guardrail_"))
+            ]
+            data = rows + extra
+        except Exception as e:
+            print(f"[ROLLING ROI] shadow_rows_unreadable path={SHADOW_BETS_PATH} error={repr(e)}")
+
+    fee_pct_fn = None
+    if FEE_AWARE_ROI_ENABLED and poly_fees:
+        fee_pct_fn = lambda price: poly_fees.fee_pct_of_stake(price, category=FEE_CATEGORY) * 100.0
+
+    try:
+        out = rolling_roi.compute_rolling_roi(
+            data,
+            window_days=WALLET_ROLLING_ROI_DAYS,
+            max_win_units=WALLET_ROLLING_ROI_MAX_WIN_UNITS,
+            fee_pct_fn=fee_pct_fn,
+        )
+    except Exception as e:
+        print(f"[ROLLING ROI] compute_failed error={repr(e)}")
+        return {}
+
+    enough = sum(1 for v in out.values() if v.get("n", 0) >= WALLET_ROLLING_ROI_MIN_BETS)
+    print(
+        "[ROLLING ROI] "
+        f"window_days={WALLET_ROLLING_ROI_DAYS} wallets={len(out)} "
+        f"with_min_bets({WALLET_ROLLING_ROI_MIN_BETS})={enough} net_of_fees={fee_pct_fn is not None}"
+    )
+    return out
 
 
 def load_wallet_performance_guardrails():
@@ -1038,6 +1132,8 @@ def load_wallet_performance_guardrails():
         return guardrails
 
     fee_drag_by_wallet = load_wallet_fee_drag_pct()
+    rolling_by_wallet = load_wallet_rolling_roi()
+    tier_changes = []
 
     for wallet, stats in wallet_rows.items():
         resolved = int(stats.get("resolved", 0) or 0)
@@ -1070,32 +1166,82 @@ def load_wallet_performance_guardrails():
         if graded_results > 0:
             win_rate = (wins / graded_results) * 100
 
-        action = "allow"
+        # Rolling ROI (net of fees) over the last WALLET_ROLLING_ROI_DAYS days. When the
+        # wallet has enough bets in the window it drives both the tier and the ROI shown
+        # in alerts; otherwise everything below is the original lifetime logic.
+        roll = rolling_by_wallet.get(wallet)
+        use_rolling = bool(
+            roll
+            and roll.get("n", 0) >= WALLET_ROLLING_ROI_MIN_BETS
+            and rolling_roi is not None
+        )
+        prev_action = _WALLET_GUARDRAIL_TIER_STATE.get(wallet)
 
-        if (
-            roi is not None
-            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS
-            and roi <= WALLET_GUARDRAIL_SUPPRESS_MAX_ROI
-        ):
-            action = "suppress"
+        display_basis = f"{WALLET_ROLLING_ROI_DAYS}d" if use_rolling else "lifetime"
 
-        elif (
-            roi is not None
-            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP
-            and roi <= WALLET_GUARDRAIL_CAP_MAX_ROI
-        ):
-            action = "cap_lean"
+        if use_rolling and WALLET_ROLLING_TIERS_ENABLED:
+            action_roi = roll["roi_net"]
+            action_n = int(roll["n"])
+            roi_basis = f"{WALLET_ROLLING_ROI_DAYS}d"
+            action = rolling_roi.decide_tier(
+                action_roi,
+                action_n,
+                prev_action,
+                suppress_enter=WALLET_GUARDRAIL_SUPPRESS_MAX_ROI,
+                suppress_exit=WALLET_GUARDRAIL_SUPPRESS_EXIT_ROI,
+                cap_enter=WALLET_GUARDRAIL_CAP_MAX_ROI,
+                cap_exit=WALLET_GUARDRAIL_CAP_EXIT_ROI,
+                trusted_enter=WALLET_GUARDRAIL_TRUSTED_MIN_ROI,
+                trusted_exit=WALLET_GUARDRAIL_TRUSTED_EXIT_ROI,
+                min_n_suppress=WALLET_ROLLING_ROI_MIN_BETS,
+                min_n_cap=WALLET_ROLLING_ROI_MIN_BETS,
+                min_n_trusted=WALLET_ROLLING_ROI_MIN_BETS,
+                trusted_history_ok=bool(
+                    roi is not None
+                    and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED
+                    and roi > 0
+                ),
+                hysteresis=True,
+            )
+        else:
+            action_roi = roi
+            action_n = resolved
+            roi_basis = "lifetime"
+            action = "allow"
 
-        elif (
-            roi is not None
-            and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED
-            and roi >= WALLET_GUARDRAIL_TRUSTED_MIN_ROI
-        ):
-            action = "trusted"
+            if (
+                roi is not None
+                and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_SUPPRESS
+                and roi <= WALLET_GUARDRAIL_SUPPRESS_MAX_ROI
+            ):
+                action = "suppress"
+
+            elif (
+                roi is not None
+                and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_CAP
+                and roi <= WALLET_GUARDRAIL_CAP_MAX_ROI
+            ):
+                action = "cap_lean"
+
+            elif (
+                roi is not None
+                and resolved >= WALLET_GUARDRAIL_MIN_RESOLVED_FOR_TRUSTED
+                and roi >= WALLET_GUARDRAIL_TRUSTED_MIN_ROI
+            ):
+                action = "trusted"
+
+        if prev_action is not None and prev_action != action:
+            tier_changes.append(
+                f"{wallet[-8:]}:{prev_action}->{action}"
+                f"({roi_basis} roi={round(float(action_roi), 1) if action_roi is not None else 'n/a'}% n={action_n})"
+            )
+        _WALLET_GUARDRAIL_TIER_STATE[wallet] = action
 
         guardrails[wallet] = {
             "wallet": wallet,
             "action": action,
+            # "roi" / "resolved" / "gross_roi" stay LIFETIME. action_roi / action_n / roi_basis
+            # say which number the tier (and the alert) is based on.
             "resolved": resolved,
             "wins": wins,
             "losses": losses,
@@ -1106,11 +1252,20 @@ def load_wallet_performance_guardrails():
             "gross_roi": gross_roi,
             "fee_drag_pct": fee_drag_pct,
             "win_rate": win_rate,
+            "roi_basis": roi_basis,
+            "display_basis": display_basis,
+            "action_roi": action_roi,
+            "action_n": action_n,
+            "roll_roi": roll["roi_net"] if roll else None,
+            "roll_gross_roi": roll["roi_gross"] if roll else None,
+            "roll_n": int(roll["n"]) if roll else 0,
+            "roll_window_days": roll.get("window_days") if roll else None,
         }
 
     suppress_count = sum(1 for row in guardrails.values() if row.get("action") == "suppress")
     cap_count = sum(1 for row in guardrails.values() if row.get("action") == "cap_lean")
     trusted_count = sum(1 for row in guardrails.values() if row.get("action") == "trusted")
+    rolling_count = sum(1 for row in guardrails.values() if row.get("display_basis") != "lifetime")
 
     print(
         "[WALLET GUARDRAILS] "
@@ -1118,8 +1273,11 @@ def load_wallet_performance_guardrails():
         f"suppress={suppress_count} "
         f"cap_lean={cap_count} "
         f"trusted={trusted_count} "
+        f"rolling_basis={rolling_count} "
         f"path={ALL_BET_SIGNALS_CSV_PATH}"
     )
+    if tier_changes:
+        print(f"[WALLET GUARDRAILS] tier_changes={len(tier_changes)} " + " ".join(tier_changes[:25]))
 
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE = guardrails
     _WALLET_PERFORMANCE_GUARDRAIL_CACHE_TS = time.time()
@@ -1330,12 +1488,17 @@ def apply_wallet_performance_guardrail(g, wallet_guardrails):
     if action in {"", "allow"}:
         return g
 
-    resolved = int(guardrail.get("resolved", 0) or 0)
-    roi = guardrail.get("roi")
+    # The tier was decided on action_roi / action_n (rolling when the wallet had enough
+    # bets in the window, else lifetime); report that same number.
+    roi_basis = str(guardrail.get("roi_basis", "") or "lifetime")
+    resolved = int(guardrail.get("action_n", guardrail.get("resolved", 0)) or 0)
+    roi = guardrail.get("action_roi", guardrail.get("roi"))
     win_rate = guardrail.get("win_rate")
 
     try:
         roi_display = f"{round(float(roi), 2)}%"
+        if roi_basis != "lifetime":
+            roi_display += f" {roi_basis}"
     except Exception:
         roi_display = "N/A"
 
@@ -1347,6 +1510,7 @@ def apply_wallet_performance_guardrail(g, wallet_guardrails):
     g["wallet_guardrail_action"] = action
     g["wallet_guardrail_resolved"] = resolved
     g["wallet_guardrail_roi"] = roi
+    g["wallet_guardrail_roi_basis"] = roi_basis
     g["wallet_guardrail_win_rate"] = win_rate
 
     if action == "suppress":
@@ -3369,12 +3533,22 @@ def format_wallet_record(wallet_result_rows, wallet):
         wallet_guardrails = load_wallet_performance_guardrails()
         guardrail = wallet_guardrails.get(wallet) if isinstance(wallet_guardrails, dict) else None
         if isinstance(guardrail, dict):
-            roi = guardrail.get("roi")
-            guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
-            if roi is not None and guardrail_resolved >= WALLET_ROI_DISPLAY_MIN_RESOLVED:
-                gross_roi_val = guardrail.get("gross_roi")
-                net_label = " net" if gross_roi_val is not None and abs(float(gross_roi_val) - float(roi)) >= 0.05 else ""
-                roi_suffix = f" | ROI: {round(float(roi), 1)}%{net_label} (n={guardrail_resolved})"
+            roi_basis = str(guardrail.get("display_basis", "") or "lifetime")
+            roll_roi_val = guardrail.get("roll_roi")
+            if roi_basis != "lifetime" and roll_roi_val is not None:
+                # Rolling window (e.g. 14d), net of fees: what the wallet is doing lately.
+                roll_gross_val = guardrail.get("roll_gross_roi")
+                net_label = " net" if roll_gross_val is not None and abs(float(roll_gross_val) - float(roll_roi_val)) >= 0.05 else ""
+                roll_n = int(guardrail.get("roll_n", 0) or 0)
+                roi_suffix = f" | ROI {roi_basis}: {float(roll_roi_val):+.1f}%{net_label} (n={roll_n})"
+            else:
+                # Too few bets in the window: fall back to the lifetime number, labeled.
+                roi = guardrail.get("roi")
+                guardrail_resolved = int(guardrail.get("resolved", 0) or 0)
+                if roi is not None and guardrail_resolved >= WALLET_ROI_DISPLAY_MIN_RESOLVED:
+                    gross_roi_val = guardrail.get("gross_roi")
+                    net_label = " net" if gross_roi_val is not None and abs(float(gross_roi_val) - float(roi)) >= 0.05 else ""
+                    roi_suffix = f" | ROI all-time: {float(roi):+.1f}%{net_label} (n={guardrail_resolved})"
     except Exception:
         roi_suffix = ""
 
