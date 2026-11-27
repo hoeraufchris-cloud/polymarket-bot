@@ -580,6 +580,11 @@ except Exception as _rolling_roi_import_error:
 WALLET_ROLLING_ROI_ENABLED = os.getenv("WALLET_ROLLING_ROI_ENABLED", "1").strip().lower() not in {"0", "false", "no", "off"}
 WALLET_ROLLING_ROI_DAYS = int(os.getenv("WALLET_ROLLING_ROI_DAYS", "14"))
 WALLET_ROLLING_ROI_MIN_BETS = int(os.getenv("WALLET_ROLLING_ROI_MIN_BETS", "30"))
+# Rolling tiers are OFF by default: the 14d number is shown in alerts, but suppress /
+# cap_lean / trusted stay on lifetime ROI. A Monte Carlo (11/27) showed 14d-ROI tiers are
+# noisy (SE ~13-18 pts at n=30-60) and no better than lifetime tiers + the dynamic block.
+# Set WALLET_ROLLING_TIERS_ENABLED=1 to decide tiers on the rolling number (with hysteresis).
+WALLET_ROLLING_TIERS_ENABLED = os.getenv("WALLET_ROLLING_TIERS_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
 WALLET_ROLLING_ROI_MAX_WIN_UNITS = 3.0  # one longshot win counts at most +3 units (matches the dynamic block)
 WALLET_GUARDRAIL_SUPPRESS_EXIT_ROI = -5.0   # leave suppress once rolling ROI is above this
 WALLET_GUARDRAIL_CAP_EXIT_ROI = 3.0         # leave cap_lean once rolling ROI is above this
@@ -987,6 +992,23 @@ def load_wallet_rolling_roi():
         print(f"[ROLLING ROI] tracked_bets_unreadable path={TRACKED_BETS_PATH} error={repr(e)}")
         return {}
 
+    # When tiers are decided on this number, shadow rows created by performance-based
+    # restrictions must stay in the window. Otherwise a suppressed / capped wallet's
+    # sample shrinks, falls back to lifetime ROI and is silently released.
+    if WALLET_ROLLING_TIERS_ENABLED:
+        try:
+            with open(SHADOW_BETS_PATH, "r", encoding="utf-8") as f:
+                shadow = json.load(f)
+            rows = list(data.values()) if isinstance(data, dict) else list(data)
+            extra = [
+                r for r in (shadow.values() if isinstance(shadow, dict) else shadow)
+                if isinstance(r, dict)
+                and str(r.get("shadow_reason", "") or "").startswith(("poor_tracked_results", "wallet_guardrail_"))
+            ]
+            data = rows + extra
+        except Exception as e:
+            print(f"[ROLLING ROI] shadow_rows_unreadable path={SHADOW_BETS_PATH} error={repr(e)}")
+
     fee_pct_fn = None
     if FEE_AWARE_ROI_ENABLED and poly_fees:
         fee_pct_fn = lambda price: poly_fees.fee_pct_of_stake(price, category=FEE_CATEGORY) * 100.0
@@ -1155,7 +1177,9 @@ def load_wallet_performance_guardrails():
         )
         prev_action = _WALLET_GUARDRAIL_TIER_STATE.get(wallet)
 
-        if use_rolling:
+        display_basis = f"{WALLET_ROLLING_ROI_DAYS}d" if use_rolling else "lifetime"
+
+        if use_rolling and WALLET_ROLLING_TIERS_ENABLED:
             action_roi = roll["roi_net"]
             action_n = int(roll["n"])
             roi_basis = f"{WALLET_ROLLING_ROI_DAYS}d"
@@ -1229,6 +1253,7 @@ def load_wallet_performance_guardrails():
             "fee_drag_pct": fee_drag_pct,
             "win_rate": win_rate,
             "roi_basis": roi_basis,
+            "display_basis": display_basis,
             "action_roi": action_roi,
             "action_n": action_n,
             "roll_roi": roll["roi_net"] if roll else None,
@@ -1240,7 +1265,7 @@ def load_wallet_performance_guardrails():
     suppress_count = sum(1 for row in guardrails.values() if row.get("action") == "suppress")
     cap_count = sum(1 for row in guardrails.values() if row.get("action") == "cap_lean")
     trusted_count = sum(1 for row in guardrails.values() if row.get("action") == "trusted")
-    rolling_count = sum(1 for row in guardrails.values() if row.get("roi_basis") != "lifetime")
+    rolling_count = sum(1 for row in guardrails.values() if row.get("display_basis") != "lifetime")
 
     print(
         "[WALLET GUARDRAILS] "
@@ -3508,7 +3533,7 @@ def format_wallet_record(wallet_result_rows, wallet):
         wallet_guardrails = load_wallet_performance_guardrails()
         guardrail = wallet_guardrails.get(wallet) if isinstance(wallet_guardrails, dict) else None
         if isinstance(guardrail, dict):
-            roi_basis = str(guardrail.get("roi_basis", "") or "lifetime")
+            roi_basis = str(guardrail.get("display_basis", "") or "lifetime")
             roll_roi_val = guardrail.get("roll_roi")
             if roi_basis != "lifetime" and roll_roi_val is not None:
                 # Rolling window (e.g. 14d), net of fees: what the wallet is doing lately.
